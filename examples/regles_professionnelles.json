@@ -1,0 +1,25 @@
+{
+  "subjects": {
+    "Clients": ["client", "clientele", "prospect", "contact", "compte client"],
+    "Projets": ["projet", "chantier", "livrable", "cahier des charges", "planning"],
+    "Fournisseurs": ["fournisseur", "commande", "devis fournisseur", "bon de livraison"]
+  },
+  "categories": {
+    "Contrats": ["contrat", "avenant", "signature", "engagement", "conditions generales"],
+    "Factures": ["facture", "paiement", "acompte", "solde", "echeance"],
+    "Devis": ["devis", "proposition commerciale", "offre", "tarification"],
+    "Rapports": ["rapport", "compte rendu", "bilan", "synthese", "indicateur"]
+  },
+  "domains": {
+    "Gestion": ["gestion", "budget", "comptabilite", "tresorerie", "depense"],
+    "Commercial": ["vente", "client", "prospection", "prospect", "offre commerciale"],
+    "Ressources humaines": ["salarie", "contrat de travail", "conge", "recrutement", "formation"],
+    "Juridique": ["juridique", "loi", "litige", "tribunal", "conformite"]
+  },
+  "topics": {
+    "Assurance": ["assurance", "sinistre", "garantie", "indemnisation"],
+    "Ressources humaines": ["salarie", "contrat de travail", "conge", "paie"],
+    "Fiscalite": ["impot", "taxe", "declaration", "fiscalite", "tva"],
+    "Securite": ["securite", "acces", "incident", "prevention", "risque"]
+  }
+}
