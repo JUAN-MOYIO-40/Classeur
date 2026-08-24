@@ -131,6 +131,10 @@ La suppression automatique est désactivée. Le choix recommandé est la quarant
 
 Classeur n'embarque pas de grand modèle génératif dans la version standard. Le moteur local est déterministe et plus léger. Il est plus facile à expliquer et il ne demande pas de connexion.
 
+## Architecture
+
+Le projet suit une séparation en couches. Le domaine contient les modèles et la logique de destination, `application/` contient les cas d’usage, `infrastructure/` encapsule le système de fichiers, SQLite, l’historique et la surveillance, et `presentation/` contient les fenêtres, dialogues, modèles Qt et workers adaptateurs. `app.py` assemble ces composants et orchestre la fenêtre principale. Le détail du découpage est disponible dans [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Installation pour le développement
 
 Il faut Python 3.11 ou une version plus récente. Sous Windows :
@@ -222,6 +226,7 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=. python tests/smoke_gui.py
 | `mdjr_classeur/semantic.py` | Rapprochement local léger |
 | `examples/regles_professionnelles.json` | Exemple de règles personnalisées |
 | `HIERARCHIE.md` | Règles de construction de l'arborescence |
+| `ARCHITECTURE.md` | Séparation des responsabilités et guide de contribution |
 | `build_windows.bat` | Construction de l'exécutable Windows |
 | `requirements.txt` | Dépendances |
 | `tests/` | Tests automatisés |

@@ -1,118 +1,40 @@
 from __future__ import annotations
 
 import json
-import os
 import queue
-import re
-import shutil
 import sys
-import time
-from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QPixmap, QPalette
-try:
-    from watchdog.events import FileSystemEventHandler
-    from watchdog.observers import Observer
-except ImportError:  # Le profil minimal reste fonctionnel sans watchdog.
-    FileSystemEventHandler = object
-    Observer = None
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QColor, QIcon, QPalette
 
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QSplitter,
-    QStatusBar, QTableView, QTextEdit, QToolBar, QVBoxLayout, QWidget, QDialog,
-    QDialogButtonBox, QFormLayout, QSpinBox, QSystemTrayIcon, QTableWidget, QTableWidgetItem,
-    QTreeWidget, QTreeWidgetItem, QTabWidget, QColorDialog,
+    QStatusBar, QTableView, QTextEdit, QVBoxLayout, QWidget, QDialog,
+    QSystemTrayIcon,
 )
 
 from .cache import ClassificationCache
-from .classifier import LocalClassifier, Classification, clean_filename, fold
+from .classifier import LocalClassifier
 from .dedupe import DuplicateReport, delete_duplicates, format_bytes, quarantine_duplicates, scan_duplicates
 from .search_index import SearchIndex, SearchRecord
 from .i18n import set_language, tr
 from .preferences import load_preferences, save_preferences
+from .domain.models import PlanItem
+from .domain.planning import build_destination
+from .application.services import ClassificationService, ScanService, UndoService
+from .application.indexing import SearchIndexService
+from .infrastructure.filesystem import FileOperationService, atomic_write_text, is_ignored_file
+from .infrastructure.history import HistoryRepository
+from .infrastructure.watcher import Observer, WatchEventHandler
+from .presentation.dialogs import (
+    DuplicateDialog, HierarchyDialog, HistoryDialog, PreferencesDialog, RulesDialog, SearchDialog,
+)
+from .presentation.models import PlanModel
+from .presentation.workers import ApplyWorker, DuplicateWorker, ScanWorker, SearchIndexWorker
 
 APP_NAME = "MDJR classeur"
-TEMPORARY_SUFFIXES = {".tmp", ".part", ".partial", ".crdownload", ".download", ".swp", ".lock"}
-
-
-def is_ignored_file(path: Path) -> bool:
-    name = path.name
-    lowered = name.casefold()
-    return (
-        lowered.startswith("~$")
-        or lowered.startswith(".~lock.")
-        or lowered.endswith("~")
-        or path.suffix.casefold() in TEMPORARY_SUFFIXES
-        or ".classeur-partial-" in lowered
-    )
-
-
-def semantic_tokens(value: str) -> set[str]:
-    normalized = fold(value)
-    aliases = {
-        "mathematiques": ["mathematiques", "mathematique", "maths", "math"],
-        "informatique": ["informatique", "info"],
-        "td": ["travaux diriges", "travaux dirige", "td"],
-        "tp": ["travaux pratiques", "travaux pratique", "tp"],
-        "examen": ["examens", "examen", "exam", "partiel"],
-        "administratif": ["administratif", "administrative", "administration"],
-    }
-    for canonical, variants in aliases.items():
-        for variant in sorted(variants, key=len, reverse=True):
-            normalized = re.sub(rf"(?<!\w){re.escape(variant)}(?!\w)", canonical, normalized)
-    return set(normalized.split())
-
-
-def reuse_existing_folder(parent: Path, desired: str) -> tuple[Path, str]:
-    """Réutilise un dossier existant si son nom normalisé correspond de façon sûre."""
-    desired_clean = clean_filename(desired, "Autre")
-    if not parent.exists():
-        return parent / desired_clean, "nouveau dossier prévu"
-    desired_tokens = semantic_tokens(desired_clean)
-    best: tuple[Path, float] | None = None
-    try:
-        children = [child for child in parent.iterdir() if child.is_dir() and not child.is_symlink()]
-    except OSError:
-        children = []
-    for child in children:
-        child_tokens = semantic_tokens(child.name)
-        if not child_tokens or not desired_tokens:
-            continue
-        if child_tokens == desired_tokens:
-            return child, "dossier existant réutilisé"
-        overlap = len(desired_tokens & child_tokens) / max(len(desired_tokens), len(child_tokens))
-        if overlap >= 0.8 and (best is None or overlap > best[1]):
-            best = (child, overlap)
-    if best:
-        return best[0], "dossier existant rapproché"
-    return parent / desired_clean, "nouveau dossier prévu"
-
-
-def build_destination(root: Path, classification: Classification, source_suffix: str, source_stem: str) -> tuple[Path, Path, str]:
-    """Construit une destination adaptative et réutilise les dossiers existants à chaque niveau."""
-    if classification.hierarchy:
-        requested_levels = list(classification.hierarchy)
-    else:
-        requested_levels = [classification.subject or "À trier", classification.category or "Autre"]
-    levels: list[str] = []
-    for level in requested_levels:
-        cleaned = clean_filename(level, "Autre")
-        if cleaned not in levels and cleaned not in {"À trier", "Autre"}:
-            levels.append(cleaned)
-    if not levels:
-        levels = ["À trier", "Autre"]
-    levels = levels[:5]
-    current = root
-    reasons: list[str] = []
-    for level in levels:
-        current, reason = reuse_existing_folder(current, level)
-        reasons.append(f"{level} : {reason}")
-    title = clean_filename(classification.title or source_stem, "Document")
-    filename = title
-    return current, (current / filename).with_suffix(source_suffix.lower()), "; ".join(reasons)
 
 
 def resource_path(relative: str) -> Path:
@@ -128,839 +50,6 @@ SEARCH_INDEX_FILE = CONFIG_DIR / "search.sqlite3"
 PREFERENCES_FILE = CONFIG_DIR / "preferences.json"
 
 
-def atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{time.time_ns()}")
-    try:
-        temporary.write_text(text, encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def classify_cached(classifier: LocalClassifier, cache: ClassificationCache, path: Path) -> Classification:
-    cached = cache.get(path, classifier.rules_version)
-    if cached is not None:
-        return cached
-    classification = classifier.classify(path)
-    cache.put(path, classifier.rules_version, classification)
-    return classification
-
-
-@dataclass
-class PlanItem:
-    source: Path
-    classification: Classification
-    destination_dir: Path
-    destination_file: Path
-    status: str = "En attente"
-    existing: bool = False
-    destination_root: Path | None = None
-    destination_reason: str = ""
-
-    @property
-    def confidence(self) -> int:
-        return self.classification.confidence
-
-    @property
-    def key(self) -> str:
-        try:
-            stat = self.source.stat()
-            return f"{self.source.resolve()}::{stat.st_size}::{stat.st_mtime_ns}"
-        except OSError:
-            return str(self.source.resolve())
-
-    @property
-    def hierarchy_label(self) -> str:
-        if self.destination_root:
-            try:
-                relative = self.destination_dir.relative_to(self.destination_root)
-                return " / ".join(relative.parts)
-            except ValueError:
-                pass
-        return " / ".join(self.classification.hierarchy or (self.classification.subject, self.classification.category))
-
-
-class WatchEventHandler(FileSystemEventHandler):
-    def __init__(self, event_queue):
-        super().__init__()
-        self.event_queue = event_queue
-
-    def _enqueue(self, path):
-        if path:
-            self.event_queue.put(Path(path))
-
-    def on_created(self, event):
-        if not event.is_directory:
-            self._enqueue(event.src_path)
-
-    def on_modified(self, event):
-        if not event.is_directory:
-            self._enqueue(event.src_path)
-
-    def on_moved(self, event):
-        if not event.is_directory:
-            self._enqueue(event.dest_path)
-
-
-class ScanWorker(QThread):
-    completed = Signal(object, int)
-    failed = Signal(str)
-
-    def __init__(self, source_dir: Path, destination_dir: Path, classifier: LocalClassifier, cache: ClassificationCache | None = None):
-        super().__init__()
-        self.source_dir = source_dir
-        self.destination_dir = destination_dir
-        self.classifier = classifier
-        self.cache = cache
-
-    def run(self):
-        try:
-            items = []
-            if not self.source_dir.exists():
-                raise FileNotFoundError("Le dossier surveillé n’existe pas.")
-            for path in sorted(self.source_dir.rglob("*")):
-                if not path.is_file() or path.is_symlink() or is_ignored_file(path):
-                    continue
-                try:
-                    path.relative_to(self.destination_dir)
-                    continue
-                except ValueError:
-                    pass
-                classification = classify_cached(self.classifier, self.cache, path) if self.cache is not None else self.classifier.classify(path)
-                destination_dir, destination_file, reason = build_destination(self.destination_dir, classification, path.suffix, path.stem)
-                items.append(PlanItem(path, classification, destination_dir, destination_file, existing=True, destination_root=self.destination_dir, destination_reason=reason))
-            self.completed.emit(items, len(items))
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
-class ApplyWorker(QThread):
-    completed = Signal(object)
-    progress = Signal(int, str)
-    failed = Signal(str)
-
-    def __init__(self, items: list[PlanItem], mode: str):
-        super().__init__()
-        self.items = items
-        self.mode = mode
-
-    @staticmethod
-    def unique_target(target: Path) -> Path:
-        if not target.exists():
-            return target
-        for index in range(1, 10000):
-            candidate = target.with_name(f"{target.stem} ({index}){target.suffix}")
-            if not candidate.exists():
-                return candidate
-        raise RuntimeError("Impossible de trouver un nom libre pour ce fichier.")
-
-    def run(self):
-        results = []
-        try:
-            total = max(1, len(self.items))
-            batch_id = f"{time.time_ns()}"
-            for index, item in enumerate(self.items, start=1):
-                source = item.source
-                try:
-                    before = source.stat()
-                    item.destination_dir.mkdir(parents=True, exist_ok=True)
-                    target = self.unique_target(item.destination_file)
-                    if self.mode == "Déplacer l’original":
-                        # Le déplacement peut traverser deux volumes ; shutil gère ce cas,
-                        # tandis que l’empreinte avant action permet de refuser les états incohérents à l’annulation.
-                        shutil.move(str(source), str(target))
-                        operation = "move"
-                    else:
-                        # Copie dans un fichier temporaire, puis remplacement final : jamais de destination partielle visible.
-                        partial = target.with_name(f".{target.name}.classeur-partial-{time.time_ns()}")
-                        try:
-                            shutil.copy2(str(source), str(partial))
-                            os.replace(str(partial), str(target))
-                        finally:
-                            if partial.exists():
-                                partial.unlink(missing_ok=True)
-                        operation = "copy"
-                    after = target.stat()
-                    item.destination_file = target
-                    item.status = "Classé"
-                    results.append({
-                        "source": str(source),
-                        "target": str(target),
-                        "operation": operation,
-                        "timestamp": time.time(),
-                        "batch_id": batch_id,
-                        "source_size": before.st_size,
-                        "source_mtime_ns": before.st_mtime_ns,
-                        "target_size": after.st_size,
-                        "target_mtime_ns": after.st_mtime_ns,
-                    })
-                except (OSError, shutil.Error) as exc:
-                    item.status = "Échec : " + str(exc)
-                    results.append({
-                        "source": str(source),
-                        "target": str(item.destination_file),
-                        "operation": "error",
-                        "error": str(exc),
-                        "batch_id": batch_id,
-                        "timestamp": time.time(),
-                    })
-                self.progress.emit(int(index * 100 / total), source.name)
-            self.completed.emit(results)
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
-class SearchIndexWorker(QThread):
-    completed = Signal(int)
-    failed = Signal(str)
-
-    def __init__(self, roots: list[Path], index: SearchIndex, classifier: LocalClassifier, cache: ClassificationCache, pending_items=None):
-        super().__init__()
-        self.roots = roots
-        self.index = index
-        self.classifier = classifier
-        self.cache = cache
-        self.pending_items = pending_items or []
-
-    def run(self):
-        worker_index = SearchIndex(self.index.database_path)
-        try:
-            indexed = 0
-            worker_index.connection.execute("BEGIN")
-            for root in self.roots:
-                if not root.exists() or not root.is_dir():
-                    continue
-                for path in root.rglob("*"):
-                    if not path.is_file() or path.is_symlink() or is_ignored_file(path):
-                        continue
-                    if not worker_index.needs_update(path, "classé"):
-                        continue
-                    classification = classify_cached(self.classifier, self.cache, path)
-                    worker_index.upsert(path, classification, "classé", " / ".join(classification.hierarchy), commit=False)
-                    indexed += 1
-            for item in self.pending_items:
-                worker_index.upsert_plan_item(item, "en attente", commit=False)
-                indexed += 1
-            worker_index.remove_missing(commit=False)
-            worker_index.connection.commit()
-            self.completed.emit(indexed)
-        except Exception as exc:
-            worker_index.connection.rollback()
-            self.failed.emit(str(exc))
-        finally:
-            worker_index.close()
-
-
-class DuplicateWorker(QThread):
-    completed = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, roots: list[Path]):
-        super().__init__()
-        self.roots = roots
-
-    def run(self):
-        try:
-            self.completed.emit(scan_duplicates(self.roots))
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
-class DuplicateDialog(QDialog):
-    def __init__(self, roots: list[Path], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(tr("Analyse intelligente des doublons") + " - " + tr("MDJR classeur"))
-        self.resize(980, 620)
-        self.roots = roots
-        self.report: DuplicateReport | None = None
-        self.worker: DuplicateWorker | None = None
-        layout = QVBoxLayout(self)
-        intro = QLabel(tr("MDJR compare le contenu réel des fichiers et la structure complète des dossiers. Rien n’est supprimé automatiquement."))
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-        self.summary = QLabel(tr("Prêt à analyser les emplacements sélectionnés."))
-        self.summary.setStyleSheet("font-size: 15px; font-weight: 700; color: #17324d;")
-        layout.addWidget(self.summary)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels([tr("Type"), tr("Éléments identiques"), tr("Espace récupérable"), tr("Emplacements")])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.setAlternatingRowColors(True)
-        layout.addWidget(self.table, 1)
-        buttons = QHBoxLayout()
-        self.scan_button = QPushButton(tr("Relancer l’analyse"))
-        self.scan_button.setObjectName("secondary")
-        self.scan_button.clicked.connect(self.scan)
-        buttons.addWidget(self.scan_button)
-        self.quarantine_button = QPushButton(tr("Mettre les copies en quarantaine"))
-        self.quarantine_button.setObjectName("danger")
-        self.quarantine_button.setEnabled(False)
-        self.quarantine_button.clicked.connect(self.quarantine)
-        buttons.addWidget(self.quarantine_button)
-        self.delete_button = QPushButton(tr("Supprimer définitivement"))
-        self.delete_button.setObjectName("danger")
-        self.delete_button.setEnabled(False)
-        self.delete_button.clicked.connect(self.delete_permanently)
-        buttons.addWidget(self.delete_button)
-        buttons.addStretch()
-        close_button = QPushButton(tr("Fermer"))
-        close_button.setObjectName("secondary")
-        close_button.clicked.connect(self.accept)
-        buttons.addWidget(close_button)
-        layout.addLayout(buttons)
-        self.scan()
-
-    def scan(self):
-        if self.worker and self.worker.isRunning():
-            return
-        self.scan_button.setEnabled(False)
-        self.quarantine_button.setEnabled(False)
-        self.delete_button.setEnabled(False)
-        self.summary.setText("Analyse en cours : empreintes des fichiers et structures de dossiers…")
-        self.table.setRowCount(0)
-        self.worker = DuplicateWorker(self.roots)
-        self.worker.completed.connect(self.on_completed)
-        self.worker.failed.connect(self.on_failed)
-        self.worker.start()
-
-    def on_completed(self, report: DuplicateReport):
-        self.report = report
-        self.scan_button.setEnabled(True)
-        duplicate_files = report.total_file_duplicates
-        duplicate_folders = report.total_folder_duplicates
-        self.summary.setText(
-            f"{report.scanned_files} fichier(s) et {report.scanned_folders} dossier(s) analysés - "
-            f"{duplicate_files} doublon(s) de fichier, {duplicate_folders} dossier(s) équivalent(s), "
-            f"{format_bytes(report.recoverable_bytes)} potentiellement récupérables."
-        )
-        rows = []
-        for group in report.file_groups:
-            rows.append(("Fichiers identiques", group.duplicate_count, format_bytes(group.recoverable_bytes), "\n".join(str(path) for path in group.files)))
-        for group in report.folder_groups:
-            rows.append(("Dossiers équivalents", group.duplicate_count, format_bytes(group.total_size * group.duplicate_count), "\n".join(str(path) for path in group.folders)))
-        self.table.setRowCount(len(rows))
-        for row, values in enumerate(rows):
-            for column, value in enumerate(values):
-                self.table.setItem(row, column, QTableWidgetItem(str(value)))
-        self.quarantine_button.setEnabled(bool(rows))
-        self.delete_button.setEnabled(bool(rows))
-
-    def on_failed(self, message: str):
-        self.scan_button.setEnabled(True)
-        self.summary.setText("L’analyse n’a pas pu être terminée.")
-        QMessageBox.critical(self, "Analyse impossible", message)
-
-    def quarantine(self):
-        if not self.report or not (self.report.file_groups or self.report.folder_groups):
-            return
-        answer = QMessageBox.question(
-            self,
-            "Confirmer la quarantaine",
-            "MDJR va conserver une copie de référence pour chaque groupe et déplacer les copies excédentaires vers une quarantaine locale.\n\nAucune suppression définitive ne sera effectuée. Continuer ?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
-            return
-        moved = quarantine_duplicates(self.report, CONFIG_DIR / "quarantaine")
-        self.summary.setText(f"{len(moved)} élément(s) déplacé(s) vers la quarantaine locale.")
-        self.quarantine_button.setEnabled(False)
-        self.delete_button.setEnabled(False)
-        QMessageBox.information(self, "Quarantaine terminée", "Les copies ont été déplacées vers .mdjr_classeur/quarantaine. Tu peux les restaurer manuellement si nécessaire.")
-        self.scan()
-
-    def delete_permanently(self):
-        if not self.report or not (self.report.file_groups or self.report.folder_groups):
-            return
-        answer = QMessageBox.warning(
-            self,
-            "Suppression définitive",
-            "Cette action supprimera définitivement les copies excédentaires et les dossiers équivalents retenus. Elle ne passe pas par la corbeille et ne peut pas être annulée par MDJR.\n\nEs-tu absolument certain de vouloir continuer ?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
-            return
-        removed = delete_duplicates(self.report)
-        self.summary.setText(f"{removed} élément(s) supprimé(s) définitivement.")
-        self.delete_button.setEnabled(False)
-        self.quarantine_button.setEnabled(False)
-        QMessageBox.information(self, "Suppression terminée", f"{removed} élément(s) ont été supprimés définitivement.")
-        self.scan()
-
-
-class SearchDialog(QDialog):
-    def __init__(self, index: SearchIndex, parent=None):
-        super().__init__(parent)
-        self.index = index
-        self.records: list[SearchRecord] = []
-        self.setWindowTitle(tr("Recherche rapide") + " - " + tr("MDJR classeur"))
-        self.resize(1050, 650)
-        layout = QVBoxLayout(self)
-        heading = QLabel(tr("Recherche documentaire locale"))
-        heading.setStyleSheet("font-size: 22px; font-weight: 800; color: #17324d;")
-        layout.addWidget(heading)
-        intro = QLabel(tr("Recherche dans les noms, matières, natures, chemins, titres et extraits de contenu. Aucun document ne quitte ton ordinateur."))
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-        controls = QHBoxLayout()
-        self.query_edit = QLineEdit()
-        self.query_edit.setPlaceholderText(tr("Ex. intégrales, attestation, projet web, semestre 2…"))
-        self.query_edit.setClearButtonEnabled(True)
-        self.query_edit.textChanged.connect(self.refresh_results)
-        controls.addWidget(self.query_edit, 1)
-        self.status_combo = QComboBox()
-        self.status_combo.addItem(tr("Tous"), "Tous")
-        self.status_combo.addItem(tr("classé"), "classé")
-        self.status_combo.addItem(tr("en attente"), "en attente")
-        self.status_combo.currentTextChanged.connect(self.refresh_results)
-        controls.addWidget(QLabel(tr("Statut :")))
-        controls.addWidget(self.status_combo)
-        refresh = QPushButton(tr("Actualiser"))
-        refresh.setObjectName("secondary")
-        refresh.clicked.connect(self.refresh_results)
-        controls.addWidget(refresh)
-        layout.addLayout(controls)
-        self.summary = QLabel(tr("Saisis un mot-clé pour commencer."))
-        self.summary.setStyleSheet("font-weight: 700; color: #47627a;")
-        layout.addWidget(self.summary)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels([tr("Fichier"), tr("Matière"), tr("Nature"), tr("Arborescence"), tr("Statut"), tr("Emplacement")])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.cellDoubleClicked.connect(lambda _row, _column: self.open_selected())
-        layout.addWidget(self.table, 1)
-        self.preview = QTextEdit()
-        self.preview.setReadOnly(True)
-        self.preview.setMaximumHeight(120)
-        self.preview.setPlaceholderText(tr("Sélectionne un résultat pour afficher son titre et son extrait."))
-        self.table.itemSelectionChanged.connect(self.show_preview)
-        layout.addWidget(self.preview)
-        buttons = QHBoxLayout()
-        open_button = QPushButton(tr("Ouvrir le fichier"))
-        open_button.clicked.connect(self.open_selected)
-        buttons.addWidget(open_button)
-        folder_button = QPushButton(tr("Afficher le dossier"))
-        folder_button.setObjectName("secondary")
-        folder_button.clicked.connect(self.open_folder)
-        buttons.addWidget(folder_button)
-        buttons.addStretch()
-        close_button = QPushButton(tr("Fermer"))
-        close_button.setObjectName("secondary")
-        close_button.clicked.connect(self.close)
-        buttons.addWidget(close_button)
-        layout.addLayout(buttons)
-
-    def refresh_results(self):
-        try:
-            self.records = self.index.search(self.query_edit.text(), self.status_combo.currentData() or "Tous")
-        except Exception as exc:
-            self.records = []
-            self.summary.setText(f"Recherche temporairement indisponible : {exc}")
-            return
-        self.table.setRowCount(len(self.records))
-        for row, record in enumerate(self.records):
-            values = [record.name, record.subject, record.category, record.hierarchy, record.status, record.path]
-            for column, value in enumerate(values):
-                self.table.setItem(row, column, QTableWidgetItem(str(value)))
-        query = self.query_edit.text().strip()
-        label = f" pour « {query} »" if query else " dans l’index local"
-        self.summary.setText(f"{len(self.records)} résultat(s){label}.")
-        if self.records:
-            self.table.selectRow(0)
-        else:
-            self.preview.clear()
-
-    def _selected_record(self) -> SearchRecord | None:
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
-            return None
-        row = rows[0].row()
-        return self.records[row] if 0 <= row < len(self.records) else None
-
-    def show_preview(self):
-        record = self._selected_record()
-        if not record:
-            return
-        self.preview.setPlainText(f"Titre : {record.title or record.name}\n\nArborescence : {record.hierarchy or 'non déterminée'}\n\nExtrait :\n{record.preview or 'Aucun extrait textuel disponible.'}\n\nChemin : {record.path}")
-
-    def open_selected(self):
-        record = self._selected_record()
-        if record:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(record.path))
-
-    def open_folder(self):
-        record = self._selected_record()
-        if record:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(record.path).parent)))
-
-
-class PlanModel(QAbstractTableModel):
-    headers = ["Fichier", "Matière", "Nature", "Arborescence", "Confiance", "Lecture", "Destination", "État"]
-
-    def __init__(self):
-        super().__init__()
-        self.items: list[PlanItem] = []
-        self.checked: set[str] = set()
-
-    def rowCount(self, parent=QModelIndex()):
-        return 0 if parent.isValid() else len(self.items)
-
-    def columnCount(self, parent=QModelIndex()):
-        return 8
-
-    def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid():
-            return None
-        item = self.items[index.row()]
-        review = tr("À vérifier") if item.classification.needs_review else tr("Proposition fiable")
-        values = [item.source.name, item.classification.subject, item.classification.category, item.hierarchy_label, f"{item.confidence} % - {review}", tr(item.classification.content_status or "non disponible"), str(item.destination_file), item.status]
-        if role in (Qt.DisplayRole, Qt.EditRole):
-            return values[index.column()]
-        if role == Qt.CheckStateRole and index.column() == 0:
-            return Qt.Checked if item.key in self.checked else Qt.Unchecked
-        if role == Qt.ForegroundRole and index.column() == 4:
-            return QColor("#159570" if item.confidence >= 75 else "#cc8a20" if item.confidence >= 45 else "#d9534f")
-        if role == Qt.ToolTipRole:
-            return item.classification.reason
-        return None
-
-    def setData(self, index, value, role=Qt.EditRole):
-        if not index.isValid():
-            return False
-        item = self.items[index.row()]
-        if index.column() == 0 and role == Qt.CheckStateRole:
-            if value == Qt.Checked:
-                self.checked.add(item.key)
-            else:
-                self.checked.discard(item.key)
-            self.dataChanged.emit(index, index, [Qt.CheckStateRole])
-            return True
-        if role == Qt.EditRole and index.column() in (1, 2):
-            text = str(value).strip() or (item.classification.subject if index.column() == 1 else item.classification.category)
-            if index.column() == 1:
-                item.classification.subject = text
-            else:
-                item.classification.category = text
-            item.classification.hierarchy = tuple(part for part in (item.classification.year, item.classification.domain, item.classification.subject, item.classification.topic, item.classification.category) if part and part not in {"À trier", "Autre"})
-            self.rebuild_destination(item)
-            self.dataChanged.emit(index, self.index(index.row(), 7), [Qt.DisplayRole, Qt.EditRole])
-            return True
-        return False
-
-    def flags(self, index):
-        flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
-        if index.column() == 0:
-            flags |= Qt.ItemIsUserCheckable
-        if index.column() in (1, 2):
-            flags |= Qt.ItemIsEditable
-        return flags
-
-    def headerData(self, section, orientation, role=Qt.DisplayRole):
-        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
-            return tr(self.headers[section])
-        return None
-
-    def rebuild_destination(self, item: PlanItem):
-        root = item.destination_root or item.destination_dir.parents[1]
-        item.destination_dir, item.destination_file, item.destination_reason = build_destination(root, item.classification, item.source.suffix, item.source.stem)
-
-    def set_items(self, items: list[PlanItem]):
-        self.beginResetModel()
-        self.items = items
-        self.checked = {item.key for item in items}
-        self.endResetModel()
-
-    def selected_items(self) -> list[PlanItem]:
-        return [item for item in self.items if item.key in self.checked]
-
-    def add_items(self, items: list[PlanItem]):
-        existing_keys = {item.key for item in self.items}
-        fresh = [item for item in items if item.key not in existing_keys]
-        if not fresh:
-            return 0
-        start = len(self.items)
-        self.beginInsertRows(QModelIndex(), start, start + len(fresh) - 1)
-        self.items.extend(fresh)
-        self.checked.update(item.key for item in fresh)
-        self.endInsertRows()
-        return len(fresh)
-
-    def remove_items(self, keys: set[str]):
-        self.beginResetModel()
-        self.items = [item for item in self.items if item.key not in keys]
-        self.checked -= keys
-        self.endResetModel()
-
-
-class RulesDialog(QDialog):
-    def __init__(self, classifier: LocalClassifier, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(tr("Règles intelligentes") + " - " + tr("MDJR classeur"))
-        self.resize(720, 520)
-        self.classifier = classifier
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(tr("Modifie les mots-clés séparés par des virgules. Les changements restent locaux.")))
-        self.subjects = QTextEdit()
-        self.categories = QTextEdit()
-        self.domains = QTextEdit()
-        self.topics = QTextEdit()
-        self.subjects.setPlainText("\n".join(f"{name}: {', '.join(words)}" for name, words in classifier.subjects.items()))
-        self.categories.setPlainText("\n".join(f"{name}: {', '.join(words)}" for name, words in classifier.categories.items()))
-        self.domains.setPlainText("\n".join(f"{name}: {', '.join(words)}" for name, words in classifier.domains.items()))
-        self.topics.setPlainText("\n".join(f"{name}: {', '.join(words)}" for name, words in classifier.topics.items()))
-        form = QFormLayout()
-        form.addRow(tr("Matières"), self.subjects)
-        form.addRow(tr("Natures"), self.categories)
-        form.addRow(tr("Domaines"), self.domains)
-        form.addRow(tr("Thèmes"), self.topics)
-        layout.addLayout(form)
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def accept(self):
-        def parse(text: str, section: str):
-            result = {}
-            errors = []
-            for line_number, raw_line in enumerate(text.splitlines(), start=1):
-                line = raw_line.strip()
-                if not line:
-                    continue
-                if ":" not in line:
-                    errors.append(f"{section}, ligne {line_number} : deux-points manquant")
-                    continue
-                name, words = (part.strip() for part in line.split(":", 1))
-                if not name or not words:
-                    errors.append(f"{section}, ligne {line_number} : nom ou mots-clés vide")
-                    continue
-                if any(char in name for char in '/\\\\:*?"<>|'):
-                    errors.append(f"{section}, ligne {line_number} : nom de dossier invalide")
-                    continue
-                values = list(dict.fromkeys(word.strip() for word in words.split(",") if word.strip()))
-                if not values:
-                    errors.append(f"{section}, ligne {line_number} : aucun mot-clé valide")
-                    continue
-                if name in result:
-                    errors.append(f"{section}, ligne {line_number} : nom répété « {name} »")
-                    continue
-                result[name] = values
-            return result, errors
-
-        parsed = [
-            parse(self.subjects.toPlainText(), "Matières"),
-            parse(self.categories.toPlainText(), "Natures"),
-            parse(self.domains.toPlainText(), "Domaines"),
-            parse(self.topics.toPlainText(), "Thèmes"),
-        ]
-        errors = [error for _values, section_errors in parsed for error in section_errors]
-        if errors:
-            QMessageBox.warning(self, "Règles non enregistrées", "Corrige ces lignes avant de continuer :\n\n" + "\n".join(errors[:12]))
-            return
-        subjects, categories, domains, topics = (values for values, _errors in parsed)
-        if not all((subjects, categories, domains, topics)):
-            QMessageBox.warning(self, "Règles incomplètes", "Chaque section doit contenir au moins une règle.")
-            return
-        self.classifier.subjects = subjects
-        self.classifier.categories = categories
-        self.classifier.domains = domains
-        self.classifier.topics = topics
-        super().accept()
-
-
-class PreferencesDialog(QDialog):
-    def __init__(self, preferences: dict[str, object], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(tr("Préférences de Classeur"))
-        self.resize(680, 460)
-        self.preferences = dict(preferences)
-        layout = QVBoxLayout(self)
-        tabs = QTabWidget()
-
-        general = QWidget()
-        general_form = QFormLayout(general)
-        self.language_combo = QComboBox()
-        self.language_combo.addItem(tr("Français"), "fr")
-        self.language_combo.addItem(tr("English"), "en")
-        current_language = str(self.preferences.get("language", "fr"))
-        self.language_combo.setCurrentIndex(0 if current_language == "fr" else 1)
-        general_form.addRow(tr("Langue"), self.language_combo)
-        self.confirm_checkbox = QCheckBox(tr("Confirmer les actions sensibles"))
-        self.confirm_checkbox.setChecked(bool(self.preferences.get("confirm_actions", True)))
-        general_form.addRow("", self.confirm_checkbox)
-        tabs.addTab(general, tr("Général"))
-
-        appearance = QWidget()
-        appearance_form = QFormLayout(appearance)
-        self.theme_combo = QComboBox()
-        self.theme_combo.addItem(tr("Système"), "system")
-        self.theme_combo.addItem(tr("Clair"), "light")
-        self.theme_combo.addItem(tr("Sombre"), "dark")
-        current_theme = str(self.preferences.get("theme", "system"))
-        theme_index = {"system": 0, "light": 1, "dark": 2}.get(current_theme, 0)
-        self.theme_combo.setCurrentIndex(theme_index)
-        appearance_form.addRow(tr("Thème"), self.theme_combo)
-
-        self.accent_value = str(self.preferences.get("accent", "#1c8c70"))
-        self.accent_button = QPushButton(self.accent_value)
-        self.accent_button.clicked.connect(self.choose_accent)
-        self._refresh_accent_button()
-        appearance_form.addRow(tr("Couleur d’accent"), self.accent_button)
-
-        background_row = QHBoxLayout()
-        self.background_edit = QLineEdit(str(self.preferences.get("background", "")))
-        self.background_edit.setReadOnly(True)
-        self.background_edit.setPlaceholderText(tr("Aucune image"))
-        background_row.addWidget(self.background_edit, 1)
-        choose_background = QPushButton(tr("Choisir une image…"))
-        choose_background.clicked.connect(self.choose_background)
-        background_row.addWidget(choose_background)
-        reset_background = QPushButton(tr("Réinitialiser"))
-        reset_background.setObjectName("secondary")
-        reset_background.clicked.connect(lambda: self.background_edit.clear())
-        background_row.addWidget(reset_background)
-        appearance_form.addRow(tr("Image de fond"), background_row)
-        tabs.addTab(appearance, tr("Apparence"))
-
-        safety = QWidget()
-        safety_form = QFormLayout(safety)
-        safety_form.addRow(QLabel("Les fichiers importants doivent rester sauvegardés séparément. La suppression définitive des doublons ne peut pas être annulée par Classeur."))
-        tabs.addTab(safety, tr("Sécurité"))
-        layout.addWidget(tabs)
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def _refresh_accent_button(self):
-        self.accent_button.setText(self.accent_value)
-        self.accent_button.setStyleSheet(f"background: {self.accent_value}; color: white; font-weight: 700;")
-
-    def choose_accent(self):
-        color = QColorDialog.getColor(QColor(self.accent_value), self, tr("Couleur d’accent"))
-        if color.isValid():
-            self.accent_value = color.name()
-            self._refresh_accent_button()
-
-    def choose_background(self):
-        path, _ = QFileDialog.getOpenFileName(self, tr("Choisir une image…"), "", "Images (*.png *.jpg *.jpeg *.webp)")
-        if path:
-            self.background_edit.setText(path)
-
-    def values(self) -> dict[str, object]:
-        return {
-            "language": self.language_combo.currentData(),
-            "theme": self.theme_combo.currentData(),
-            "accent": self.accent_value,
-            "background": self.background_edit.text().strip(),
-            "confirm_actions": self.confirm_checkbox.isChecked(),
-        }
-
-
-class HistoryDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(tr("Historique"))
-        self.resize(980, 560)
-        layout = QVBoxLayout(self)
-        intro = QLabel(tr("Les opérations réussies sont conservées localement. L’annulation vérifie que les fichiers n’ont pas changé."))
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels([tr("Date"), tr("Action"), tr("Fichier source"), tr("Destination"), tr("État")])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.table.setAlternatingRowColors(True)
-        layout.addWidget(self.table, 1)
-        buttons = QHBoxLayout()
-        refresh = QPushButton(tr("Actualiser"))
-        refresh.clicked.connect(self.load_history)
-        buttons.addWidget(refresh)
-        buttons.addStretch()
-        undo = QPushButton(tr("Annuler la dernière opération"))
-        undo.setObjectName("secondary")
-        undo.clicked.connect(self.undo_latest)
-        buttons.addWidget(undo)
-        close_button = QPushButton(tr("Fermer"))
-        close_button.setObjectName("secondary")
-        close_button.clicked.connect(self.close)
-        buttons.addWidget(close_button)
-        layout.addLayout(buttons)
-        self.load_history()
-
-    def load_history(self):
-        try:
-            history = json.loads(LOG_FILE.read_text(encoding="utf-8")) if LOG_FILE.exists() else []
-        except (OSError, json.JSONDecodeError):
-            history = []
-        self.table.setRowCount(len(history))
-        for row, entry in enumerate(reversed(history)):
-            action = "Déplacement" if entry.get("operation") == "move" else "Copie"
-            values = [time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry.get("timestamp", 0))), action, entry.get("source", ""), entry.get("target", ""), "Réussi"]
-            for column, value in enumerate(values):
-                self.table.setItem(row, column, QTableWidgetItem(str(value)))
-
-    def undo_latest(self):
-        if self.parent() is not None and hasattr(self.parent(), "undo_last"):
-            self.parent().undo_last()
-            self.load_history()
-
-
-class HierarchyDialog(QDialog):
-    def __init__(self, items: list[PlanItem], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(tr("Aperçu de l’arborescence - MDJR classeur"))
-        self.resize(900, 620)
-        layout = QVBoxLayout(self)
-        intro = QLabel("Voici l’organisation proposée avant classement. Les dossiers existants sont réutilisés lorsque leur nom est compatible.")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Organisation proposée", "Fichiers"])
-        self.tree.setAlternatingRowColors(True)
-        self.tree.setColumnWidth(0, 650)
-        roots: dict[tuple[str, ...], QTreeWidgetItem] = {}
-        counts: dict[tuple[str, ...], int] = {}
-        for item in items:
-            parts = tuple(part for part in item.hierarchy_label.split(" / ") if part) or ("À trier", "Autre")
-            parent = None
-            prefix: list[str] = []
-            for part in parts:
-                prefix.append(part)
-                key = tuple(prefix)
-                node = roots.get(key)
-                if node is None:
-                    node = QTreeWidgetItem([part, ""])
-                    if parent is None:
-                        self.tree.addTopLevelItem(node)
-                    else:
-                        parent.addChild(node)
-                    roots[key] = node
-                parent = node
-            counts[parts] = counts.get(parts, 0) + 1
-            if parent is not None:
-                parent.setText(1, str(counts[parts]))
-        self.tree.expandToDepth(2)
-        layout.addWidget(self.tree, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(self.reject)
-        buttons.accepted.connect(self.accept)
-        layout.addWidget(buttons)
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -973,6 +62,11 @@ class MainWindow(QMainWindow):
         self.classifier = LocalClassifier.from_json(CONFIG_DIR / "regles.json")
         self.cache = ClassificationCache(CACHE_FILE)
         self.search_index = SearchIndex(SEARCH_INDEX_FILE)
+        self.classification_service = ClassificationService(self.classifier, self.cache)
+        self.scan_service = ScanService(self.classification_service)
+        self.history_repository = HistoryRepository(LOG_FILE)
+        self.undo_service = UndoService(self.history_repository)
+        self.file_operation_service = FileOperationService()
         self.search_worker = None
         self.search_dialog = None
         self.model = PlanModel()
@@ -1127,7 +221,8 @@ class MainWindow(QMainWindow):
         settings_row.addWidget(self.auto_checkbox)
         settings_row.addStretch()
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems([tr("Copier l’original (recommandé)"), tr("Déplacer l’original")])
+        self.mode_combo.addItem(tr("Copier l’original (recommandé)"), "copy")
+        self.mode_combo.addItem(tr("Déplacer l’original"), "move")
         settings_row.addWidget(QLabel(tr("Action :")))
         settings_row.addWidget(self.mode_combo)
         root.addLayout(settings_row)
@@ -1307,7 +402,7 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
         self.statusBar().showMessage("Analyse du dossier et du contenu des fichiers en cours…")
-        self.scan_thread = ScanWorker(source, destination, self.classifier, self.cache)
+        self.scan_thread = ScanWorker(source, destination, self.classifier, self.cache, self.scan_service)
         self.scan_thread.completed.connect(self.on_scan_completed)
         self.scan_thread.failed.connect(self.on_worker_failed)
         self.scan_thread.start()
@@ -1390,7 +485,7 @@ class MainWindow(QMainWindow):
                     if previous_key != key:
                         self.pending_signatures[path_id] = key
                         continue
-                    classification = classify_cached(self.classifier, self.cache, path)
+                    classification = self.classification_service.classify(path)
                     target_dir, target, reason = build_destination(destination, classification, path.suffix, path.stem)
                     item = PlanItem(path, classification, target_dir, target, destination_root=destination, destination_reason=reason)
                     fresh.append(item)
@@ -1551,12 +646,12 @@ class MainWindow(QMainWindow):
     def execute_items(self, items):
         if self.apply_thread and self.apply_thread.isRunning():
             return
-        mode = "Déplacer l’original" if self.mode_combo.currentIndex() == 1 else "Copier l’original"
+        mode = self.mode_combo.currentData() or "copy"
         self.approve_button.setEnabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        self.apply_thread = ApplyWorker(items, mode)
+        self.apply_thread = ApplyWorker(items, mode, self.file_operation_service)
         self.apply_thread.progress.connect(lambda value, name: (self.progress.setValue(value), self.statusBar().showMessage(f"Classement : {name}")))
         self.apply_thread.completed.connect(self.on_apply_completed)
         self.apply_thread.failed.connect(self.on_worker_failed)
@@ -1596,76 +691,26 @@ class MainWindow(QMainWindow):
         self.update_badge()
 
     def save_history(self, entries):
-        history = []
-        if LOG_FILE.exists():
-            try:
-                history = json.loads(LOG_FILE.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                history = []
-        history.extend(entries)
-        atomic_write_text(LOG_FILE, json.dumps(history[-1000:], ensure_ascii=False, indent=2))
-
-    @staticmethod
-    def _record_matches_target(record: dict, target: Path) -> bool:
-        try:
-            stat = target.stat()
-            expected_size = record.get("target_size")
-            expected_mtime = record.get("target_mtime_ns")
-            if expected_size is not None and stat.st_size != expected_size:
-                return False
-            if expected_mtime is not None and stat.st_mtime_ns != expected_mtime:
-                return False
-            return True
-        except OSError:
-            return False
+        self.history_repository.append(entries)
 
     def undo_last(self):
-        if not LOG_FILE.exists():
+        entries = self.history_repository.load()
+        if not entries:
             QMessageBox.information(self, "Aucune opération", "Aucune opération récente n’est disponible pour être annulée.")
             return
-        try:
-            history = json.loads(LOG_FILE.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            history = []
-        if not history:
-            QMessageBox.information(self, "Aucune opération", "Aucune opération récente n’est disponible pour être annulée.")
-            return
-        last = history[-1]
+        last = entries[-1]
         batch_id = last.get("batch_id")
-        batch = [entry for entry in history if isinstance(entry, dict) and (entry.get("batch_id") == batch_id if batch_id else entry is last)]
-        if not batch:
-            batch = [last]
-        label = f"{len(batch)} fichier(s) de la dernière session" if len(batch) > 1 else f"« {Path(last.get('target', '')).name} »"
+        batch_size = sum(1 for entry in entries if batch_id and entry.get("batch_id") == batch_id) if batch_id else 1
+        label = f"{batch_size} fichier(s) de la dernière session" if batch_size > 1 else f"« {Path(last.get('target', '')).name} »"
         if QMessageBox.question(self, "Annuler le classement", f"Annuler {label} ?\nLes fichiers modifiés depuis le classement seront conservés.", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        undone = []
-        skipped = []
-        try:
-            for record in reversed(batch):
-                target = Path(record.get("target", ""))
-                source = Path(record.get("source", ""))
-                if not target.exists() or not self._record_matches_target(record, target):
-                    skipped.append(target.name or str(target))
-                    continue
-                if record.get("operation") == "move":
-                    source.parent.mkdir(parents=True, exist_ok=True)
-                    restored = source if not source.exists() else source.with_name(f"{source.stem} (restauré){source.suffix}")
-                    shutil.move(str(target), str(restored))
-                else:
-                    target.unlink()
-                undone.append(record)
-            if undone:
-                remaining = [entry for entry in history if entry not in undone]
-                atomic_write_text(LOG_FILE, json.dumps(remaining, ensure_ascii=False, indent=2))
-                self.search_index.remove_missing()
-            message = f"{len(undone)} opération(s) annulée(s)."
-            if skipped:
-                message += f" {len(skipped)} fichier(s) ignoré(s), car ils ont changé ou ne sont plus à la destination attendue."
-            self.statusBar().showMessage(message)
-            if skipped:
-                QMessageBox.warning(self, "Annulation partielle", message)
-        except OSError as exc:
-            QMessageBox.critical(self, "Annulation impossible", str(exc))
+        undone, skipped = self.undo_service.undo_latest()
+        self.search_index.remove_missing()
+        message = f"{undone} opération(s) annulée(s)."
+        if skipped:
+            message += f" {len(skipped)} fichier(s) ignoré(s), car ils ont changé ou ne sont plus à la destination attendue."
+            QMessageBox.warning(self, "Annulation partielle", message)
+        self.statusBar().showMessage(message)
 
     def clear_queue(self):
         if not self.model.items:
@@ -1686,7 +731,8 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def open_history(self):
-        dialog = HistoryDialog(self)
+        dialog = HistoryDialog(self.history_repository, self)
+        dialog.undo_requested.connect(self.undo_last)
         dialog.exec()
 
     def open_rules(self):
