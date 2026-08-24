@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
 import shutil
@@ -32,6 +33,19 @@ from .dedupe import DuplicateReport, delete_duplicates, format_bytes, quarantine
 from .search_index import SearchIndex, SearchRecord
 
 APP_NAME = "MDJR classeur"
+TEMPORARY_SUFFIXES = {".tmp", ".part", ".partial", ".crdownload", ".download", ".swp", ".lock"}
+
+
+def is_ignored_file(path: Path) -> bool:
+    name = path.name
+    lowered = name.casefold()
+    return (
+        lowered.startswith("~$")
+        or lowered.startswith(".~lock.")
+        or lowered.endswith("~")
+        or path.suffix.casefold() in TEMPORARY_SUFFIXES
+        or ".classeur-partial-" in lowered
+    )
 
 
 def semantic_tokens(value: str) -> set[str]:
@@ -111,6 +125,16 @@ CACHE_FILE = CONFIG_DIR / "classifications.sqlite3"
 SEARCH_INDEX_FILE = CONFIG_DIR / "search.sqlite3"
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{time.time_ns()}")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def classify_cached(classifier: LocalClassifier, cache: ClassificationCache, path: Path) -> Classification:
     cached = cache.get(path, classifier.rules_version)
     if cached is not None:
@@ -180,7 +204,7 @@ class ScanWorker(QThread):
     completed = Signal(object, int)
     failed = Signal(str)
 
-    def __init__(self, source_dir: Path, destination_dir: Path, classifier: LocalClassifier, cache: ClassificationCache):
+    def __init__(self, source_dir: Path, destination_dir: Path, classifier: LocalClassifier, cache: ClassificationCache | None = None):
         super().__init__()
         self.source_dir = source_dir
         self.destination_dir = destination_dir
@@ -193,14 +217,14 @@ class ScanWorker(QThread):
             if not self.source_dir.exists():
                 raise FileNotFoundError("Le dossier surveillé n’existe pas.")
             for path in sorted(self.source_dir.rglob("*")):
-                if not path.is_file() or path.is_symlink():
+                if not path.is_file() or path.is_symlink() or is_ignored_file(path):
                     continue
                 try:
                     path.relative_to(self.destination_dir)
                     continue
                 except ValueError:
                     pass
-                classification = classify_cached(self.classifier, self.cache, path)
+                classification = classify_cached(self.classifier, self.cache, path) if self.cache is not None else self.classifier.classify(path)
                 destination_dir, destination_file, reason = build_destination(self.destination_dir, classification, path.suffix, path.stem)
                 items.append(PlanItem(path, classification, destination_dir, destination_file, existing=True, destination_root=self.destination_dir, destination_reason=reason))
             self.completed.emit(items, len(items))
@@ -232,23 +256,53 @@ class ApplyWorker(QThread):
         results = []
         try:
             total = max(1, len(self.items))
+            batch_id = f"{time.time_ns()}"
             for index, item in enumerate(self.items, start=1):
-                if not item.source.exists():
-                    item.status = "Source introuvable"
-                    results.append(item)
-                    continue
-                item.destination_dir.mkdir(parents=True, exist_ok=True)
-                target = self.unique_target(item.destination_file)
-                if self.mode == "Déplacer l’original":
-                    shutil.move(str(item.source), str(target))
-                    operation = "move"
-                else:
-                    shutil.copy2(str(item.source), str(target))
-                    operation = "copy"
-                item.destination_file = target
-                item.status = "Classé"
-                results.append({"source": str(item.source), "target": str(target), "operation": operation, "timestamp": time.time()})
-                self.progress.emit(int(index * 100 / total), item.source.name)
+                source = item.source
+                try:
+                    before = source.stat()
+                    item.destination_dir.mkdir(parents=True, exist_ok=True)
+                    target = self.unique_target(item.destination_file)
+                    if self.mode == "Déplacer l’original":
+                        # Le déplacement peut traverser deux volumes ; shutil gère ce cas,
+                        # tandis que l’empreinte avant action permet de refuser les états incohérents à l’annulation.
+                        shutil.move(str(source), str(target))
+                        operation = "move"
+                    else:
+                        # Copie dans un fichier temporaire, puis remplacement final : jamais de destination partielle visible.
+                        partial = target.with_name(f".{target.name}.classeur-partial-{time.time_ns()}")
+                        try:
+                            shutil.copy2(str(source), str(partial))
+                            os.replace(str(partial), str(target))
+                        finally:
+                            if partial.exists():
+                                partial.unlink(missing_ok=True)
+                        operation = "copy"
+                    after = target.stat()
+                    item.destination_file = target
+                    item.status = "Classé"
+                    results.append({
+                        "source": str(source),
+                        "target": str(target),
+                        "operation": operation,
+                        "timestamp": time.time(),
+                        "batch_id": batch_id,
+                        "source_size": before.st_size,
+                        "source_mtime_ns": before.st_mtime_ns,
+                        "target_size": after.st_size,
+                        "target_mtime_ns": after.st_mtime_ns,
+                    })
+                except (OSError, shutil.Error) as exc:
+                    item.status = "Échec : " + str(exc)
+                    results.append({
+                        "source": str(source),
+                        "target": str(item.destination_file),
+                        "operation": "error",
+                        "error": str(exc),
+                        "batch_id": batch_id,
+                        "timestamp": time.time(),
+                    })
+                self.progress.emit(int(index * 100 / total), source.name)
             self.completed.emit(results)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -270,27 +324,26 @@ class SearchIndexWorker(QThread):
         worker_index = SearchIndex(self.index.database_path)
         try:
             indexed = 0
-            seen: set[str] = set()
+            worker_index.connection.execute("BEGIN")
             for root in self.roots:
                 if not root.exists() or not root.is_dir():
                     continue
                 for path in root.rglob("*"):
-                    if not path.is_file() or path.is_symlink():
+                    if not path.is_file() or path.is_symlink() or is_ignored_file(path):
                         continue
-                    resolved = str(path.resolve())
-                    seen.add(resolved)
                     if not worker_index.needs_update(path, "classé"):
                         continue
                     classification = classify_cached(self.classifier, self.cache, path)
-                    worker_index.upsert(path, classification, "classé", " / ".join(classification.hierarchy))
+                    worker_index.upsert(path, classification, "classé", " / ".join(classification.hierarchy), commit=False)
                     indexed += 1
             for item in self.pending_items:
-                worker_index.upsert_plan_item(item, "en attente")
-                seen.add(str(item.source.resolve()))
+                worker_index.upsert_plan_item(item, "en attente", commit=False)
                 indexed += 1
-            worker_index.remove_missing()
+            worker_index.remove_missing(commit=False)
+            worker_index.connection.commit()
             self.completed.emit(indexed)
         except Exception as exc:
+            worker_index.connection.rollback()
             self.failed.emit(str(exc))
         finally:
             worker_index.close()
@@ -547,7 +600,7 @@ class SearchDialog(QDialog):
 
 
 class PlanModel(QAbstractTableModel):
-    headers = ["Fichier", "Matière", "Nature", "Arborescence", "Confiance", "Destination", "État"]
+    headers = ["Fichier", "Matière", "Nature", "Arborescence", "Confiance", "Lecture", "Destination", "État"]
 
     def __init__(self):
         super().__init__()
@@ -558,14 +611,14 @@ class PlanModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(self.items)
 
     def columnCount(self, parent=QModelIndex()):
-        return 7
+        return 8
 
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
             return None
         item = self.items[index.row()]
         review = "À vérifier" if item.classification.needs_review else "Proposition fiable"
-        values = [item.source.name, item.classification.subject, item.classification.category, item.hierarchy_label, f"{item.confidence} % - {review}", str(item.destination_file), item.status]
+        values = [item.source.name, item.classification.subject, item.classification.category, item.hierarchy_label, f"{item.confidence} % - {review}", item.classification.content_status or "non disponible", str(item.destination_file), item.status]
         if role in (Qt.DisplayRole, Qt.EditRole):
             return values[index.column()]
         if role == Qt.CheckStateRole and index.column() == 0:
@@ -595,7 +648,7 @@ class PlanModel(QAbstractTableModel):
                 item.classification.category = text
             item.classification.hierarchy = tuple(part for part in (item.classification.year, item.classification.domain, item.classification.subject, item.classification.topic, item.classification.category) if part and part not in {"À trier", "Autre"})
             self.rebuild_destination(item)
-            self.dataChanged.emit(index, self.index(index.row(), 6), [Qt.DisplayRole, Qt.EditRole])
+            self.dataChanged.emit(index, self.index(index.row(), 7), [Qt.DisplayRole, Qt.EditRole])
             return True
         return False
 
@@ -672,25 +725,51 @@ class RulesDialog(QDialog):
         layout.addWidget(buttons)
 
     def accept(self):
-        def parse(text: str):
+        def parse(text: str, section: str):
             result = {}
-            for line in text.splitlines():
-                if ":" in line:
-                    name, words = line.split(":", 1)
-                    result[name.strip()] = [word.strip() for word in words.split(",") if word.strip()]
-            return result
-        subjects = parse(self.subjects.toPlainText())
-        categories = parse(self.categories.toPlainText())
-        domains = parse(self.domains.toPlainText())
-        topics = parse(self.topics.toPlainText())
-        if subjects:
-            self.classifier.subjects = subjects
-        if categories:
-            self.classifier.categories = categories
-        if domains:
-            self.classifier.domains = domains
-        if topics:
-            self.classifier.topics = topics
+            errors = []
+            for line_number, raw_line in enumerate(text.splitlines(), start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if ":" not in line:
+                    errors.append(f"{section}, ligne {line_number} : deux-points manquant")
+                    continue
+                name, words = (part.strip() for part in line.split(":", 1))
+                if not name or not words:
+                    errors.append(f"{section}, ligne {line_number} : nom ou mots-clés vide")
+                    continue
+                if any(char in name for char in '/\\\\:*?"<>|'):
+                    errors.append(f"{section}, ligne {line_number} : nom de dossier invalide")
+                    continue
+                values = list(dict.fromkeys(word.strip() for word in words.split(",") if word.strip()))
+                if not values:
+                    errors.append(f"{section}, ligne {line_number} : aucun mot-clé valide")
+                    continue
+                if name in result:
+                    errors.append(f"{section}, ligne {line_number} : nom répété « {name} »")
+                    continue
+                result[name] = values
+            return result, errors
+
+        parsed = [
+            parse(self.subjects.toPlainText(), "Matières"),
+            parse(self.categories.toPlainText(), "Natures"),
+            parse(self.domains.toPlainText(), "Domaines"),
+            parse(self.topics.toPlainText(), "Thèmes"),
+        ]
+        errors = [error for _values, section_errors in parsed for error in section_errors]
+        if errors:
+            QMessageBox.warning(self, "Règles non enregistrées", "Corrige ces lignes avant de continuer :\n\n" + "\n".join(errors[:12]))
+            return
+        subjects, categories, domains, topics = (values for values, _errors in parsed)
+        if not all((subjects, categories, domains, topics)):
+            QMessageBox.warning(self, "Règles incomplètes", "Chaque section doit contenir au moins une règle.")
+            return
+        self.classifier.subjects = subjects
+        self.classifier.categories = categories
+        self.classifier.domains = domains
+        self.classifier.topics = topics
         super().accept()
 
 
@@ -909,10 +988,11 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         splitter.addWidget(self.table)
         self.explain = QTextEdit()
         self.explain.setReadOnly(True)
@@ -952,7 +1032,7 @@ class MainWindow(QMainWindow):
 
     def _save_config(self):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps({"source": self.source_edit.text(), "destination": self.destination_edit.text()}, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(CONFIG_FILE, json.dumps({"version": 2, "source": self.source_edit.text(), "destination": self.destination_edit.text()}, ensure_ascii=False, indent=2))
         self.classifier.save_json(CONFIG_DIR / "regles.json")
 
     def choose_source(self):
@@ -978,11 +1058,16 @@ class MainWindow(QMainWindow):
         if not source.exists() or not source.is_dir():
             QMessageBox.warning(self, "Dossier invalide", "Le dossier à surveiller n’existe pas.")
             return None
-        if source.resolve() == destination.resolve():
+        source_resolved = source.resolve()
+        destination_resolved = destination.resolve()
+        if source_resolved == destination_resolved:
             QMessageBox.warning(self, "Dossiers identiques", "Le dossier de classement doit être différent du dossier surveillé.")
             return None
+        if source_resolved in destination_resolved.parents or destination_resolved in source_resolved.parents:
+            QMessageBox.warning(self, "Dossiers imbriqués", "Choisis deux dossiers séparés. Un dossier source ne doit pas contenir le dossier de classement, ni l’inverse.")
+            return None
         self._save_config()
-        return source.resolve(), destination.resolve()
+        return source_resolved, destination_resolved
 
     def scan_existing(self):
         paths = self.folder_paths()
@@ -1049,7 +1134,7 @@ class MainWindow(QMainWindow):
         valid = set()
         for path in candidates:
             try:
-                if not path.is_file() or path.is_symlink():
+                if not path.is_file() or path.is_symlink() or is_ignored_file(path):
                     continue
                 path.relative_to(destination)
                 continue
@@ -1211,7 +1296,8 @@ class MainWindow(QMainWindow):
             return
         item = self.model.items[rows[0].row()]
         preview = item.classification.extracted_preview or "Aucun extrait textuel disponible pour ce format."
-        self.explain.setPlainText(f"Pourquoi cette proposition ?\n{item.classification.reason}\n\nAperçu local du contenu :\n{preview}\n\nDestination :\n{item.destination_file}\n\nArborescence : {item.destination_reason or 'création ou réutilisation déterminée pendant l’analyse.'}")
+        content_status = item.classification.content_status or "état d’extraction non disponible (ancienne classification)"
+        self.explain.setPlainText(f"Pourquoi cette proposition ?\n{item.classification.reason}\n\nQualité de lecture : {content_status}\n\nAperçu local du contenu :\n{preview}\n\nDestination :\n{item.destination_file}\n\nArborescence : {item.destination_reason or 'création ou réutilisation déterminée pendant l’analyse.'}")
 
     def set_auto_mode(self, state):
         self.auto_mode = state == Qt.Checked
@@ -1251,21 +1337,32 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(False)
         keys = set()
         log_entries = []
+        errors = []
         items_by_source = {str(item.source): item for item in self.model.items}
         for result in results:
-            if isinstance(result, dict):
-                source = result["source"]
-                item = items_by_source.get(source)
-                keys.add(item.key if item else source)
-                log_entries.append(result)
-                target = Path(result["target"])
-                if target.exists() and item:
-                    self.search_index.upsert(target, item.classification, "classé", item.hierarchy_label)
-                if result.get("operation") == "move":
-                    self.search_index.remove_missing()
+            if not isinstance(result, dict):
+                continue
+            source = result.get("source", "")
+            item = items_by_source.get(source)
+            if result.get("operation") == "error":
+                errors.append(f"{Path(source).name} : {result.get('error', 'erreur inconnue')}")
+                if item:
+                    item.status = "Échec : " + result.get("error", "erreur inconnue")
+                continue
+            keys.add(item.key if item else source)
+            log_entries.append(result)
+            target = Path(result["target"])
+            if target.exists() and item:
+                self.search_index.upsert(target, item.classification, "classé", item.hierarchy_label)
+            if result.get("operation") == "move":
+                self.search_index.remove_missing()
         self.save_history(log_entries)
         self.model.remove_items(keys)
-        self.statusBar().showMessage(f"{len(log_entries)} fichier(s) classé(s) avec succès.")
+        summary = f"{len(log_entries)} fichier(s) classé(s) avec succès."
+        if errors:
+            summary += f" {len(errors)} échec(s) conservé(s) dans la file."
+            QMessageBox.warning(self, "Classement partiellement terminé", summary + "\n\n" + "\n".join(errors[:8]))
+        self.statusBar().showMessage(summary)
         self.update_badge()
 
     def save_history(self, entries):
@@ -1276,7 +1373,21 @@ class MainWindow(QMainWindow):
             except (OSError, json.JSONDecodeError):
                 history = []
         history.extend(entries)
-        LOG_FILE.write_text(json.dumps(history[-1000:], ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(LOG_FILE, json.dumps(history[-1000:], ensure_ascii=False, indent=2))
+
+    @staticmethod
+    def _record_matches_target(record: dict, target: Path) -> bool:
+        try:
+            stat = target.stat()
+            expected_size = record.get("target_size")
+            expected_mtime = record.get("target_mtime_ns")
+            if expected_size is not None and stat.st_size != expected_size:
+                return False
+            if expected_mtime is not None and stat.st_mtime_ns != expected_mtime:
+                return False
+            return True
+        except OSError:
+            return False
 
     def undo_last(self):
         if not LOG_FILE.exists():
@@ -1290,24 +1401,39 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Aucune opération", "Aucune opération récente n’est disponible pour être annulée.")
             return
         last = history[-1]
-        target = Path(last.get("target", ""))
-        source = Path(last.get("source", ""))
-        if not target.exists():
-            QMessageBox.warning(self, "Opération introuvable", "Le fichier classé n’existe plus à sa destination actuelle.")
+        batch_id = last.get("batch_id")
+        batch = [entry for entry in history if isinstance(entry, dict) and (entry.get("batch_id") == batch_id if batch_id else entry is last)]
+        if not batch:
+            batch = [last]
+        label = f"{len(batch)} fichier(s) de la dernière session" if len(batch) > 1 else f"« {Path(last.get('target', '')).name} »"
+        if QMessageBox.question(self, "Annuler le classement", f"Annuler {label} ?\nLes fichiers modifiés depuis le classement seront conservés.", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        if QMessageBox.question(self, "Annuler le classement", f"Restaurer « {target.name} » ?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-            return
+        undone = []
+        skipped = []
         try:
-            if last.get("operation") == "move":
-                source.parent.mkdir(parents=True, exist_ok=True)
-                restored = source if not source.exists() else source.with_name(f"{source.stem} (restauré){source.suffix}")
-                shutil.move(str(target), str(restored))
-            else:
-                target.unlink()
-            self.search_index.remove_missing()
-            history.pop()
-            LOG_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
-            self.statusBar().showMessage("Dernière opération annulée.")
+            for record in reversed(batch):
+                target = Path(record.get("target", ""))
+                source = Path(record.get("source", ""))
+                if not target.exists() or not self._record_matches_target(record, target):
+                    skipped.append(target.name or str(target))
+                    continue
+                if record.get("operation") == "move":
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    restored = source if not source.exists() else source.with_name(f"{source.stem} (restauré){source.suffix}")
+                    shutil.move(str(target), str(restored))
+                else:
+                    target.unlink()
+                undone.append(record)
+            if undone:
+                remaining = [entry for entry in history if entry not in undone]
+                atomic_write_text(LOG_FILE, json.dumps(remaining, ensure_ascii=False, indent=2))
+                self.search_index.remove_missing()
+            message = f"{len(undone)} opération(s) annulée(s)."
+            if skipped:
+                message += f" {len(skipped)} fichier(s) ignoré(s), car ils ont changé ou ne sont plus à la destination attendue."
+            self.statusBar().showMessage(message)
+            if skipped:
+                QMessageBox.warning(self, "Annulation partielle", message)
         except OSError as exc:
             QMessageBox.critical(self, "Annulation impossible", str(exc))
 
@@ -1320,17 +1446,6 @@ class MainWindow(QMainWindow):
             self.model.set_items([])
             self.statusBar().showMessage("File de classement vidée. Aucun fichier n’a été modifié.")
             self.update_badge()
-
-    def closeEvent(self, event):
-        self.watching = False
-        self._stop_watch_observer()
-        if self.scan_thread and self.scan_thread.isRunning():
-            self.scan_thread.quit()
-            self.scan_thread.wait(1500)
-        if self.apply_thread and self.apply_thread.isRunning():
-            self.apply_thread.quit()
-            self.apply_thread.wait(1500)
-        super().closeEvent(event)
 
     def open_duplicate_scan(self):
         paths = self.folder_paths()

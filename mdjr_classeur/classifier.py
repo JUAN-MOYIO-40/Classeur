@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import time
 from difflib import SequenceMatcher
 import unicodedata
 import zipfile
@@ -61,6 +63,8 @@ DEFAULT_CATEGORIES = {
 }
 
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".py", ".js", ".ts", ".html", ".css", ".xml", ".yml", ".yaml", ".ini", ".log"}
+ARCHIVE_TEXT_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".odt"}
+KNOWN_CONTENT_EXTENSIONS = TEXT_EXTENSIONS | ARCHIVE_TEXT_EXTENSIONS | {".pdf"}
 
 
 def fold(text: str) -> str:
@@ -95,23 +99,62 @@ def suggest_title(path: Path, content: str) -> str:
     return clean_filename(path.stem, "Document")
 
 
-def _read_pdf(path: Path) -> str:
+def _read_pdf(path: Path, max_chars: int = 30000) -> str:
     try:
         from pypdf import PdfReader
         reader = PdfReader(str(path))
-        return "\n".join((page.extract_text() or "") for page in reader.pages[:8])[:30000]
+        chunks: list[str] = []
+        total = 0
+        # Parcourir jusqu’à la limite de texte plutôt que de couper arbitrairement aux 8 premières pages.
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            if not text:
+                continue
+            remaining = max_chars - total
+            if remaining <= 0:
+                break
+            chunks.append(text[:remaining])
+            total += len(text)
+        return "\n".join(chunks)[:max_chars]
     except Exception:
+        return ""
+
+
+def _read_zip_xml_text(path: Path, prefixes: tuple[str, ...], max_chars: int = 30000) -> str:
+    """Extrait le texte visible de quelques formats XML compressés sans dépendance lourde."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = [name for name in archive.namelist() if name.startswith(prefixes) and name.endswith(".xml")]
+            chunks: list[str] = []
+            total = 0
+            for name in names:
+                raw = archive.read(name)
+                root = ElementTree.fromstring(raw)
+                text = " ".join(node.text or "" for node in root.iter() if node.text)
+                remaining = max_chars - total
+                if remaining <= 0:
+                    break
+                chunks.append(text[:remaining])
+                total += len(text)
+            return " ".join(chunks)[:max_chars]
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile, ElementTree.ParseError):
         return ""
 
 
 def _read_docx(path: Path) -> str:
-    try:
-        with zipfile.ZipFile(path) as archive:
-            raw = archive.read("word/document.xml")
-        root = ElementTree.fromstring(raw)
-        return " ".join(node.text or "" for node in root.iter() if node.tag.endswith("}t"))[:30000]
-    except Exception:
-        return ""
+    return _read_zip_xml_text(path, ("word/",))
+
+
+def _read_xlsx(path: Path) -> str:
+    return _read_zip_xml_text(path, ("xl/worksheets/", "xl/sharedStrings.xml", "xl/workbook.xml"))
+
+
+def _read_pptx(path: Path) -> str:
+    return _read_zip_xml_text(path, ("ppt/slides/", "ppt/notesSlides/", "ppt/presentation.xml"))
+
+
+def _read_odt(path: Path) -> str:
+    return _read_zip_xml_text(path, ("content.xml", "meta.xml"))
 
 
 def read_content(path: Path, max_chars: int = 30000) -> str:
@@ -122,9 +165,15 @@ def read_content(path: Path, max_chars: int = 30000) -> str:
         except OSError:
             return ""
     if extension == ".pdf":
-        return _read_pdf(path)[:max_chars]
+        return _read_pdf(path, max_chars)
     if extension == ".docx":
         return _read_docx(path)[:max_chars]
+    if extension == ".xlsx":
+        return _read_xlsx(path)[:max_chars]
+    if extension == ".pptx":
+        return _read_pptx(path)[:max_chars]
+    if extension == ".odt":
+        return _read_odt(path)[:max_chars]
     return ""
 
 
@@ -142,6 +191,7 @@ class Classification:
     hierarchy: tuple[str, ...] = ()
     alternatives: tuple[str, ...] = ()
     needs_review: bool = False
+    content_status: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -168,7 +218,14 @@ class LocalClassifier:
             return cls()
 
     def save_json(self, path: Path) -> None:
-        path.write_text(json.dumps({"subjects": self.subjects, "categories": self.categories, "domains": self.domains, "topics": self.topics}, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = json.dumps({"subjects": self.subjects, "categories": self.categories, "domains": self.domains, "topics": self.topics}, ensure_ascii=False, indent=2)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{time.time_ns()}")
+        try:
+            temporary.write_text(payload, encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     @property
     def rules_version(self) -> str:
@@ -277,12 +334,25 @@ class LocalClassifier:
             reasons.append("période : " + year)
         if not reasons:
             reasons.append("aucun mot-clé reconnu")
+        if content:
+            reasons.append(f"contenu lu : {path.suffix.lower() or 'fichier texte'}")
+        elif path.suffix.lower() not in KNOWN_CONTENT_EXTENSIONS:
+            reasons.append(f"format non pris en charge : {path.suffix.lower() or 'sans extension'}")
+        else:
+            reasons.append("contenu absent ou illisible : analyse limitée au nom et au chemin")
         title = suggest_title(path, content)
         selected_topic = topic if topic_score >= 2 else ""
         hierarchy = tuple(part for part in (year, domain, subject, selected_topic, category) if part and part not in {"À trier", "Autre"})
         if needs_review:
             reasons.append("validation recommandée")
-        return Classification(subject, category, confidence, "; ".join(reasons), content[:500].replace("\n", " "), title, year, domain, selected_topic, hierarchy, tuple(alternatives), needs_review)
+        extension = path.suffix.lower()
+        if content:
+            content_status = "contenu lu"
+        elif extension not in KNOWN_CONTENT_EXTENSIONS:
+            content_status = "format non pris en charge"
+        else:
+            content_status = "contenu absent ou illisible"
+        return Classification(subject, category, confidence, "; ".join(reasons), content[:500].replace("\n", " "), title, year, domain, selected_topic, hierarchy, tuple(alternatives), needs_review, content_status)
 
     def categories_for(self) -> Iterable[str]:
         return [*self.categories.keys(), "Autre"]

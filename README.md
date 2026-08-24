@@ -12,7 +12,7 @@ Classeur peut :
 
 - analyser les fichiers déjà présents dans un dossier
 - surveiller les nouveaux fichiers pendant que l'application est ouverte
-- lire les noms, les chemins, les fichiers texte, les PDF qui contiennent du texte et les DOCX
+- lire les noms, les chemins, les fichiers texte, les PDF qui contiennent du texte, les DOCX, les XLSX, les PPTX et certains ODT
 - reconnaître une année ou une période quand le signal est fiable
 - proposer un domaine, une matière, un thème et une nature de document
 - réutiliser les dossiers qui existent déjà
@@ -22,7 +22,7 @@ Classeur peut :
 - repérer les doublons exacts par contenu
 - placer les doublons dans une quarantaine avant toute suppression
 
-Le classement par défaut est une copie. L'original reste donc dans le dossier d'arrivée. Le déplacement doit être choisi volontairement.
+Le classement par défaut est une copie. L'original reste donc dans le dossier d'arrivée. Le déplacement doit être choisi volontairement. Les copies sont écrites dans un fichier temporaire puis rendues visibles seulement quand la copie est terminée.
 
 ## Exemple d'arborescence étudiante
 
@@ -119,7 +119,7 @@ Le bouton `Scanner les doublons` compare les contenus. Deux fichiers sont consid
 
 Le moteur compare d'abord la taille, puis une empreinte rapide, puis calcule le SHA-256 complet pour les candidats. Les dossiers qui contiennent les mêmes fichiers peuvent aussi être signalés.
 
-La suppression automatique est désactivée. Le choix recommandé est la quarantaine réversible. La suppression définitive demande une action séparée et une confirmation.
+La suppression automatique est désactivée. Le choix recommandé est la quarantaine réversible. La suppression définitive demande une action séparée et une confirmation. Avant une quarantaine ou une suppression, Classeur vérifie que l’empreinte du fichier n’a pas changé depuis le scan.
 
 ## Profils de fonctionnement
 
@@ -216,7 +216,11 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=. python tests/smoke_gui.py
 
 ## Limites connues
 
-Les PDF scannés comme des images, les photos et certains formats fermés ne peuvent pas toujours être lus. Dans ce cas, Classeur utilise surtout le nom et le chemin. Une version avec OCR local pourrait améliorer ce point.
+Les PDF scannés comme des images, les photos et certains formats fermés ne peuvent pas toujours être lus. Dans ce cas, Classeur affiche que l’analyse est limitée au nom et au chemin. Les documents très complexes, les tableaux et certains éléments non textuels peuvent encore être partiellement extraits. Une version avec OCR local pourrait améliorer ce point.
+
+Chaque proposition indique maintenant si le contenu a été lu, s’il est absent ou illisible, ou si l’extension n’est pas prise en charge. Une confiance affichée reste un score heuristique, pas une garantie mathématique. Les documents importants doivent donc être vérifiés et sauvegardés.
+
+Les dossiers source et destination doivent être séparés. Les fichiers temporaires de logiciels et de synchronisation courants sont ignorés pendant la surveillance. L’annulation peut restaurer toute la dernière session quand les fichiers n’ont pas été modifiés depuis le classement ; les fichiers changés sont volontairement laissés en place.
 
 Classeur ne remplace pas une sauvegarde. Il est conseillé de garder une copie des documents importants.
 

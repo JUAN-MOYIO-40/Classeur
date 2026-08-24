@@ -236,14 +236,30 @@ def _unique_quarantine_target(root: Path, original: Path) -> Path:
 
 
 def duplicate_victims(report: DuplicateReport) -> list[Path]:
+    """Retourne uniquement les copies encore identiques à l’instant de l’action."""
     victims: list[Path] = []
+    file_digests: dict[Path, str] = {}
+    folder_signatures: dict[Path, str] = {}
     for group in report.file_groups:
-        victims.extend(group.files[1:])
+        for path in group.files[1:]:
+            victims.append(path)
+            file_digests[path] = group.digest
     for group in report.folder_groups:
-        victims.extend(group.folders[1:])
+        for path in group.folders[1:]:
+            victims.append(path)
+            folder_signatures[path] = group.signature
     unique: list[Path] = []
     for path in sorted(set(victims), key=lambda item: (len(item.parts), str(item).casefold())):
         if any(parent == path or parent in path.parents for parent in unique if parent.is_dir()):
+            continue
+        try:
+            if path.is_file() and path in file_digests and hash_file(path) != file_digests[path]:
+                continue
+            if path.is_dir() and path in folder_signatures:
+                current = _folder_signature(path, {}, quick=False)
+                if current is None or current[0] != folder_signatures[path]:
+                    continue
+        except OSError:
             continue
         unique.append(path)
     return unique

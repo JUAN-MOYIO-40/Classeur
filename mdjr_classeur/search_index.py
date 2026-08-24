@@ -29,9 +29,10 @@ class SearchIndex:
     def __init__(self, database_path: Path):
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(str(database_path), check_same_thread=False)
+        self.connection = sqlite3.connect(str(database_path), check_same_thread=False, timeout=5.0)
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA synchronous=NORMAL")
+        self.connection.execute("PRAGMA busy_timeout=5000")
         self._fts_enabled = False
         self._initialize()
 
@@ -56,6 +57,7 @@ class SearchIndex:
         if "hierarchy" not in columns:
             self.connection.execute("ALTER TABLE documents ADD COLUMN hierarchy TEXT NOT NULL DEFAULT ''")
         self.connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)")
+        self.connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_mtime ON documents(mtime_ns)")
         try:
             fts_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(documents_fts)").fetchall()}
             if fts_columns and "hierarchy" not in fts_columns:
@@ -85,7 +87,7 @@ class SearchIndex:
         ).fetchone()
         return row is None or tuple(row) != (signature[0], signature[1], status)
 
-    def upsert(self, path: Path, classification: Classification, status: str = "classé", hierarchy: str = "") -> bool:
+    def upsert(self, path: Path, classification: Classification, status: str = "classé", hierarchy: str = "", commit: bool = True) -> bool:
         hierarchy = hierarchy or " / ".join(classification.hierarchy)
         signature = self._file_signature(path)
         if signature is None:
@@ -126,11 +128,12 @@ class SearchIndex:
                 "INSERT INTO documents_fts(rowid, path, name, subject, category, hierarchy, title, preview, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 , (document_id, resolved, fold(path.name), fold(classification.subject), fold(classification.category), fold(hierarchy), fold(classification.title), fold(classification.extracted_preview), fold(status))
             )
-        self.connection.commit()
+        if commit:
+            self.connection.commit()
         return True
 
-    def upsert_plan_item(self, item, status: str = "en attente") -> bool:
-        return self.upsert(item.source, item.classification, status, getattr(item, "hierarchy_label", ""))
+    def upsert_plan_item(self, item, status: str = "en attente", commit: bool = True) -> bool:
+        return self.upsert(item.source, item.classification, status, getattr(item, "hierarchy_label", ""), commit=commit)
 
     def delete_path(self, path: Path):
         resolved = str(path.resolve())
@@ -141,14 +144,14 @@ class SearchIndex:
                 self.connection.execute("DELETE FROM documents_fts WHERE rowid = ?", (row[0],))
             self.connection.commit()
 
-    def remove_missing(self):
+    def remove_missing(self, commit: bool = True):
         rows = self.connection.execute("SELECT id, path FROM documents").fetchall()
         missing = [row for row in rows if not Path(row[1]).exists()]
         for document_id, _path in missing:
             self.connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
             if self._fts_enabled:
                 self.connection.execute("DELETE FROM documents_fts WHERE rowid = ?", (document_id,))
-        if missing:
+        if missing and commit:
             self.connection.commit()
 
     @staticmethod
@@ -157,6 +160,7 @@ class SearchIndex:
 
     def search(self, query: str, status: str = "Tous", limit: int = 300) -> list[SearchRecord]:
         tokens = self._query_tokens(query)
+        limit = max(1, min(int(limit), 2000))
         where_status = "" if status == "Tous" else " AND documents.status = ?"
         params: list[object] = []
         if self._fts_enabled and tokens:
@@ -171,12 +175,13 @@ class SearchIndex:
         else:
             fields = "(LOWER(path) LIKE ? OR LOWER(name) LIKE ? OR LOWER(subject) LIKE ? OR LOWER(category) LIKE ? OR LOWER(hierarchy) LIKE ? OR LOWER(title) LIKE ? OR LOWER(preview) LIKE ?)"
             if tokens:
-                value = f"%{' '.join(tokens)}%"
+                # Le fallback LIKE conserve la sémantique AND de FTS5 pour les requêtes à plusieurs termes.
+                token_fields = " AND ".join(fields for _token in tokens)
                 sql = (
                     "SELECT path, name, subject, category, hierarchy, title, preview, status, size, mtime_ns FROM documents WHERE "
-                    + fields + where_status + " ORDER BY updated_at DESC LIMIT ?"
+                    + token_fields + where_status + " ORDER BY updated_at DESC LIMIT ?"
                 )
-                params = [value] * 7
+                params = [f"%{token}%" for token in tokens for _field in range(7)]
             else:
                 sql = "SELECT path, name, subject, category, hierarchy, title, preview, status, size, mtime_ns FROM documents WHERE 1=1" + where_status + " ORDER BY updated_at DESC LIMIT ?"
         if status != "Tous":
