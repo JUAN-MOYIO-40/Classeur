@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QPixmap
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QPixmap, QPalette
 try:
     from watchdog.events import FileSystemEventHandler
     from watchdog.observers import Observer
@@ -24,13 +24,15 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QSplitter,
     QStatusBar, QTableView, QTextEdit, QToolBar, QVBoxLayout, QWidget, QDialog,
     QDialogButtonBox, QFormLayout, QSpinBox, QSystemTrayIcon, QTableWidget, QTableWidgetItem,
-    QTreeWidget, QTreeWidgetItem,
+    QTreeWidget, QTreeWidgetItem, QTabWidget, QColorDialog,
 )
 
 from .cache import ClassificationCache
 from .classifier import LocalClassifier, Classification, clean_filename, fold
 from .dedupe import DuplicateReport, delete_duplicates, format_bytes, quarantine_duplicates, scan_duplicates
 from .search_index import SearchIndex, SearchRecord
+from .i18n import set_language, tr
+from .preferences import load_preferences, save_preferences
 
 APP_NAME = "MDJR classeur"
 TEMPORARY_SUFFIXES = {".tmp", ".part", ".partial", ".crdownload", ".download", ".swp", ".lock"}
@@ -123,6 +125,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 LOG_FILE = CONFIG_DIR / "historique.json"
 CACHE_FILE = CONFIG_DIR / "classifications.sqlite3"
 SEARCH_INDEX_FILE = CONFIG_DIR / "search.sqlite3"
+PREFERENCES_FILE = CONFIG_DIR / "preferences.json"
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -494,36 +497,38 @@ class SearchDialog(QDialog):
         super().__init__(parent)
         self.index = index
         self.records: list[SearchRecord] = []
-        self.setWindowTitle("Recherche rapide - MDJR classeur")
+        self.setWindowTitle(tr("Recherche rapide") + " - " + tr("MDJR classeur"))
         self.resize(1050, 650)
         layout = QVBoxLayout(self)
-        heading = QLabel("Recherche documentaire locale")
+        heading = QLabel(tr("Recherche documentaire locale"))
         heading.setStyleSheet("font-size: 22px; font-weight: 800; color: #17324d;")
         layout.addWidget(heading)
-        intro = QLabel("Recherche dans les noms, matières, natures, chemins, titres et extraits de contenu. Aucun document ne quitte ton ordinateur.")
+        intro = QLabel(tr("Recherche dans les noms, matières, natures, chemins, titres et extraits de contenu. Aucun document ne quitte ton ordinateur."))
         intro.setWordWrap(True)
         layout.addWidget(intro)
         controls = QHBoxLayout()
         self.query_edit = QLineEdit()
-        self.query_edit.setPlaceholderText("Ex. intégrales, attestation, projet web, semestre 2…")
+        self.query_edit.setPlaceholderText(tr("Ex. intégrales, attestation, projet web, semestre 2…"))
         self.query_edit.setClearButtonEnabled(True)
         self.query_edit.textChanged.connect(self.refresh_results)
         controls.addWidget(self.query_edit, 1)
         self.status_combo = QComboBox()
-        self.status_combo.addItems(["Tous", "classé", "en attente"])
+        self.status_combo.addItem(tr("Tous"), "Tous")
+        self.status_combo.addItem(tr("classé"), "classé")
+        self.status_combo.addItem(tr("en attente"), "en attente")
         self.status_combo.currentTextChanged.connect(self.refresh_results)
-        controls.addWidget(QLabel("Statut :"))
+        controls.addWidget(QLabel(tr("Statut :")))
         controls.addWidget(self.status_combo)
-        refresh = QPushButton("Actualiser")
+        refresh = QPushButton(tr("Actualiser"))
         refresh.setObjectName("secondary")
         refresh.clicked.connect(self.refresh_results)
         controls.addWidget(refresh)
         layout.addLayout(controls)
-        self.summary = QLabel("Saisis un mot-clé pour commencer.")
+        self.summary = QLabel(tr("Saisis un mot-clé pour commencer."))
         self.summary.setStyleSheet("font-weight: 700; color: #47627a;")
         layout.addWidget(self.summary)
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Fichier", "Matière", "Nature", "Arborescence", "Statut", "Emplacement"])
+        self.table.setHorizontalHeaderLabels([tr("Fichier"), tr("Matière"), tr("Nature"), tr("Arborescence"), tr("Statut"), tr("Emplacement")])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -537,19 +542,19 @@ class SearchDialog(QDialog):
         self.preview = QTextEdit()
         self.preview.setReadOnly(True)
         self.preview.setMaximumHeight(120)
-        self.preview.setPlaceholderText("Sélectionne un résultat pour afficher son titre et son extrait.")
+        self.preview.setPlaceholderText(tr("Sélectionne un résultat pour afficher son titre et son extrait."))
         self.table.itemSelectionChanged.connect(self.show_preview)
         layout.addWidget(self.preview)
         buttons = QHBoxLayout()
-        open_button = QPushButton("Ouvrir le fichier")
+        open_button = QPushButton(tr("Ouvrir le fichier"))
         open_button.clicked.connect(self.open_selected)
         buttons.addWidget(open_button)
-        folder_button = QPushButton("Afficher le dossier")
+        folder_button = QPushButton(tr("Afficher le dossier"))
         folder_button.setObjectName("secondary")
         folder_button.clicked.connect(self.open_folder)
         buttons.addWidget(folder_button)
         buttons.addStretch()
-        close_button = QPushButton("Fermer")
+        close_button = QPushButton(tr("Fermer"))
         close_button.setObjectName("secondary")
         close_button.clicked.connect(self.close)
         buttons.addWidget(close_button)
@@ -557,7 +562,7 @@ class SearchDialog(QDialog):
 
     def refresh_results(self):
         try:
-            self.records = self.index.search(self.query_edit.text(), self.status_combo.currentText())
+            self.records = self.index.search(self.query_edit.text(), self.status_combo.currentData() or "Tous")
         except Exception as exc:
             self.records = []
             self.summary.setText(f"Recherche temporairement indisponible : {exc}")
@@ -617,8 +622,8 @@ class PlanModel(QAbstractTableModel):
         if not index.isValid():
             return None
         item = self.items[index.row()]
-        review = "À vérifier" if item.classification.needs_review else "Proposition fiable"
-        values = [item.source.name, item.classification.subject, item.classification.category, item.hierarchy_label, f"{item.confidence} % - {review}", item.classification.content_status or "non disponible", str(item.destination_file), item.status]
+        review = tr("À vérifier") if item.classification.needs_review else tr("Proposition fiable")
+        values = [item.source.name, item.classification.subject, item.classification.category, item.hierarchy_label, f"{item.confidence} % - {review}", tr(item.classification.content_status or "non disponible"), str(item.destination_file), item.status]
         if role in (Qt.DisplayRole, Qt.EditRole):
             return values[index.column()]
         if role == Qt.CheckStateRole and index.column() == 0:
@@ -662,7 +667,7 @@ class PlanModel(QAbstractTableModel):
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if role == Qt.DisplayRole and orientation == Qt.Horizontal:
-            return self.headers[section]
+            return tr(self.headers[section])
         return None
 
     def rebuild_destination(self, item: PlanItem):
@@ -773,6 +778,147 @@ class RulesDialog(QDialog):
         super().accept()
 
 
+class PreferencesDialog(QDialog):
+    def __init__(self, preferences: dict[str, object], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr("Préférences de Classeur"))
+        self.resize(680, 460)
+        self.preferences = dict(preferences)
+        layout = QVBoxLayout(self)
+        tabs = QTabWidget()
+
+        general = QWidget()
+        general_form = QFormLayout(general)
+        self.language_combo = QComboBox()
+        self.language_combo.addItem(tr("Français"), "fr")
+        self.language_combo.addItem(tr("English"), "en")
+        current_language = str(self.preferences.get("language", "fr"))
+        self.language_combo.setCurrentIndex(0 if current_language == "fr" else 1)
+        general_form.addRow(tr("Langue"), self.language_combo)
+        self.confirm_checkbox = QCheckBox(tr("Confirmer les actions sensibles"))
+        self.confirm_checkbox.setChecked(bool(self.preferences.get("confirm_actions", True)))
+        general_form.addRow("", self.confirm_checkbox)
+        tabs.addTab(general, tr("Général"))
+
+        appearance = QWidget()
+        appearance_form = QFormLayout(appearance)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem(tr("Système"), "system")
+        self.theme_combo.addItem(tr("Clair"), "light")
+        self.theme_combo.addItem(tr("Sombre"), "dark")
+        current_theme = str(self.preferences.get("theme", "system"))
+        theme_index = {"system": 0, "light": 1, "dark": 2}.get(current_theme, 0)
+        self.theme_combo.setCurrentIndex(theme_index)
+        appearance_form.addRow(tr("Thème"), self.theme_combo)
+
+        self.accent_value = str(self.preferences.get("accent", "#1c8c70"))
+        self.accent_button = QPushButton(self.accent_value)
+        self.accent_button.clicked.connect(self.choose_accent)
+        self._refresh_accent_button()
+        appearance_form.addRow(tr("Couleur d’accent"), self.accent_button)
+
+        background_row = QHBoxLayout()
+        self.background_edit = QLineEdit(str(self.preferences.get("background", "")))
+        self.background_edit.setReadOnly(True)
+        self.background_edit.setPlaceholderText(tr("Aucune image"))
+        background_row.addWidget(self.background_edit, 1)
+        choose_background = QPushButton(tr("Choisir une image…"))
+        choose_background.clicked.connect(self.choose_background)
+        background_row.addWidget(choose_background)
+        reset_background = QPushButton(tr("Réinitialiser"))
+        reset_background.setObjectName("secondary")
+        reset_background.clicked.connect(lambda: self.background_edit.clear())
+        background_row.addWidget(reset_background)
+        appearance_form.addRow(tr("Image de fond"), background_row)
+        tabs.addTab(appearance, tr("Apparence"))
+
+        safety = QWidget()
+        safety_form = QFormLayout(safety)
+        safety_form.addRow(QLabel("Les fichiers importants doivent rester sauvegardés séparément. La suppression définitive des doublons ne peut pas être annulée par Classeur."))
+        tabs.addTab(safety, tr("Sécurité"))
+        layout.addWidget(tabs)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _refresh_accent_button(self):
+        self.accent_button.setText(self.accent_value)
+        self.accent_button.setStyleSheet(f"background: {self.accent_value}; color: white; font-weight: 700;")
+
+    def choose_accent(self):
+        color = QColorDialog.getColor(QColor(self.accent_value), self, tr("Couleur d’accent"))
+        if color.isValid():
+            self.accent_value = color.name()
+            self._refresh_accent_button()
+
+    def choose_background(self):
+        path, _ = QFileDialog.getOpenFileName(self, tr("Choisir une image…"), "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if path:
+            self.background_edit.setText(path)
+
+    def values(self) -> dict[str, object]:
+        return {
+            "language": self.language_combo.currentData(),
+            "theme": self.theme_combo.currentData(),
+            "accent": self.accent_value,
+            "background": self.background_edit.text().strip(),
+            "confirm_actions": self.confirm_checkbox.isChecked(),
+        }
+
+
+class HistoryDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr("Historique"))
+        self.resize(980, 560)
+        layout = QVBoxLayout(self)
+        intro = QLabel(tr("Les opérations réussies sont conservées localement. L’annulation vérifie que les fichiers n’ont pas changé."))
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels([tr("Date"), tr("Action"), tr("Fichier source"), tr("Destination"), tr("État")])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.table.setAlternatingRowColors(True)
+        layout.addWidget(self.table, 1)
+        buttons = QHBoxLayout()
+        refresh = QPushButton(tr("Actualiser"))
+        refresh.clicked.connect(self.load_history)
+        buttons.addWidget(refresh)
+        buttons.addStretch()
+        undo = QPushButton(tr("Annuler la dernière opération"))
+        undo.setObjectName("secondary")
+        undo.clicked.connect(self.undo_latest)
+        buttons.addWidget(undo)
+        close_button = QPushButton(tr("Fermer"))
+        close_button.setObjectName("secondary")
+        close_button.clicked.connect(self.close)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+        self.load_history()
+
+    def load_history(self):
+        try:
+            history = json.loads(LOG_FILE.read_text(encoding="utf-8")) if LOG_FILE.exists() else []
+        except (OSError, json.JSONDecodeError):
+            history = []
+        self.table.setRowCount(len(history))
+        for row, entry in enumerate(reversed(history)):
+            action = "Déplacement" if entry.get("operation") == "move" else "Copie"
+            values = [time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry.get("timestamp", 0))), action, entry.get("source", ""), entry.get("target", ""), "Réussi"]
+            for column, value in enumerate(values):
+                self.table.setItem(row, column, QTableWidgetItem(str(value)))
+
+    def undo_latest(self):
+        if self.parent() is not None and hasattr(self.parent(), "undo_last"):
+            self.parent().undo_last()
+            self.load_history()
+
+
 class HierarchyDialog(QDialog):
     def __init__(self, items: list[PlanItem], parent=None):
         super().__init__(parent)
@@ -818,10 +964,12 @@ class HierarchyDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MDJR classeur - votre assistant documentaire local")
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self.preferences = load_preferences(PREFERENCES_FILE)
+        set_language(str(self.preferences.get("language", "fr")))
+        self.setWindowTitle(tr("MDJR classeur") + " - " + tr("votre assistant documentaire local"))
         self.setWindowIcon(QIcon(str(resource_path("assets/mdjr.svg"))))
         self.resize(1320, 820)
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         self.classifier = LocalClassifier.from_json(CONFIG_DIR / "regles.json")
         self.cache = ClassificationCache(CACHE_FILE)
         self.search_index = SearchIndex(SEARCH_INDEX_FILE)
@@ -839,6 +987,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._load_config()
         self._setup_tray()
+        self.apply_preferences()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_folder)
         self.timer.start(2500)
@@ -866,6 +1015,7 @@ class MainWindow(QMainWindow):
             QProgressBar::chunk { background: #1c8c70; border-radius: 5px; }
         """)
         central = QWidget()
+        central.setObjectName("central")
         root = QVBoxLayout(central)
         root.setContentsMargins(28, 24, 28, 20)
         root.setSpacing(16)
@@ -874,13 +1024,13 @@ class MainWindow(QMainWindow):
         hero_layout = QHBoxLayout(hero)
         hero_layout.setContentsMargins(26, 22, 26, 22)
         title_box = QVBoxLayout()
-        title = QLabel("MDJR classeur", objectName="title")
-        subtitle = QLabel("Le classeur intelligent qui comprend vos documents - en local, avec contrôle total.", objectName="subtitle")
+        title = QLabel(tr("MDJR classeur"), objectName="title")
+        subtitle = QLabel(tr("Le classeur intelligent qui comprend vos documents - en local, avec contrôle total."), objectName="subtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
         hero_layout.addLayout(title_box)
         hero_layout.addStretch()
-        self.status_badge = QLabel("●  Surveillance inactive")
+        self.status_badge = QLabel("●  " + tr("Surveillance inactive"))
         self.status_badge.setStyleSheet("color: #ffcf66; font-weight: 700; font-size: 14px;")
         hero_layout.addWidget(self.status_badge, alignment=Qt.AlignVCenter)
         root.addWidget(hero)
@@ -889,21 +1039,21 @@ class MainWindow(QMainWindow):
         paths_layout = QVBoxLayout(paths)
         paths_layout.setContentsMargins(0, 0, 0, 0)
         source_row = QHBoxLayout()
-        source_row.addWidget(QLabel("Dossier à surveiller"))
+        source_row.addWidget(QLabel(tr("Dossier à surveiller")))
         self.source_edit = QLineEdit()
-        self.source_edit.setPlaceholderText("Choisis le dossier où arrivent les fichiers…")
+        self.source_edit.setPlaceholderText(tr("Choisis le dossier où arrivent les fichiers…"))
         source_row.addWidget(self.source_edit, 1)
-        source_button = QPushButton("Parcourir")
+        source_button = QPushButton(tr("Parcourir"))
         source_button.setObjectName("secondary")
         source_button.clicked.connect(self.choose_source)
         source_row.addWidget(source_button)
         paths_layout.addLayout(source_row)
         destination_row = QHBoxLayout()
-        destination_row.addWidget(QLabel("Dossier de classement"))
+        destination_row.addWidget(QLabel(tr("Dossier de classement")))
         self.destination_edit = QLineEdit()
-        self.destination_edit.setPlaceholderText("Choisis le dossier qui contiendra l’organisation finale…")
+        self.destination_edit.setPlaceholderText(tr("Choisis le dossier qui contiendra l’organisation finale…"))
         destination_row.addWidget(self.destination_edit, 1)
-        destination_button = QPushButton("Parcourir")
+        destination_button = QPushButton(tr("Parcourir"))
         destination_button.setObjectName("secondary")
         destination_button.clicked.connect(self.choose_destination)
         destination_row.addWidget(destination_button)
@@ -921,56 +1071,64 @@ class MainWindow(QMainWindow):
             card_layout.addWidget(label)
             stats_row.addWidget(card, 1)
             return value
-        self.pending_stat = stat_card("fichiers en attente")
-        self.reuse_stat = stat_card("destinations réutilisées")
-        self.confidence_stat = stat_card("confiance moyenne")
+        self.pending_stat = stat_card(tr("fichiers en attente"))
+        self.reuse_stat = stat_card(tr("destinations réutilisées"))
+        self.confidence_stat = stat_card(tr("confiance moyenne"))
         root.addLayout(stats_row)
 
         actions = QHBoxLayout()
-        self.scan_button = QPushButton("Analyser les fichiers existants")
+        self.scan_button = QPushButton(tr("Analyser les fichiers existants"))
         self.scan_button.clicked.connect(self.scan_existing)
         actions.addWidget(self.scan_button)
-        self.watch_button = QPushButton("Démarrer la surveillance")
+        self.watch_button = QPushButton(tr("Démarrer la surveillance"))
         self.watch_button.clicked.connect(self.toggle_watch)
         actions.addWidget(self.watch_button)
-        self.approve_button = QPushButton("Classer les éléments sélectionnés")
+        self.approve_button = QPushButton(tr("Classer les éléments sélectionnés"))
         self.approve_button.clicked.connect(self.apply_selected)
         actions.addWidget(self.approve_button)
-        self.clear_button = QPushButton("Vider la file")
+        self.clear_button = QPushButton(tr("Vider la file"))
         self.clear_button.setObjectName("danger")
         self.clear_button.clicked.connect(self.clear_queue)
         actions.addWidget(self.clear_button)
-        self.undo_button = QPushButton("Annuler la dernière opération")
+        self.undo_button = QPushButton(tr("Annuler la dernière opération"))
         self.undo_button.setObjectName("secondary")
         self.undo_button.clicked.connect(self.undo_last)
         actions.addWidget(self.undo_button)
-        self.duplicate_button = QPushButton("Scanner les doublons")
+        self.history_button = QPushButton(tr("Historique"))
+        self.history_button.setObjectName("secondary")
+        self.history_button.clicked.connect(self.open_history)
+        actions.addWidget(self.history_button)
+        self.duplicate_button = QPushButton(tr("Scanner les doublons"))
         self.duplicate_button.setObjectName("secondary")
         self.duplicate_button.clicked.connect(self.open_duplicate_scan)
         actions.addWidget(self.duplicate_button)
-        self.hierarchy_button = QPushButton("Aperçu arborescence")
+        self.hierarchy_button = QPushButton(tr("Aperçu arborescence"))
         self.hierarchy_button.setObjectName("secondary")
         self.hierarchy_button.clicked.connect(self.open_hierarchy_preview)
         actions.addWidget(self.hierarchy_button)
-        self.search_button = QPushButton("Recherche rapide")
+        self.search_button = QPushButton(tr("Recherche rapide"))
         self.search_button.setObjectName("secondary")
         self.search_button.clicked.connect(self.open_search)
         actions.addWidget(self.search_button)
         actions.addStretch()
-        self.rules_button = QPushButton("Règles")
+        self.rules_button = QPushButton(tr("Règles"))
         self.rules_button.setObjectName("secondary")
         self.rules_button.clicked.connect(self.open_rules)
         actions.addWidget(self.rules_button)
+        self.preferences_button = QPushButton(tr("Préférences"))
+        self.preferences_button.setObjectName("secondary")
+        self.preferences_button.clicked.connect(self.open_preferences)
+        actions.addWidget(self.preferences_button)
         root.addLayout(actions)
 
         settings_row = QHBoxLayout()
-        self.auto_checkbox = QCheckBox("Autoriser le classement automatique pendant la surveillance (les cas ambigus vont dans À trier)")
+        self.auto_checkbox = QCheckBox(tr("Autoriser le classement automatique pendant la surveillance (les cas ambigus vont dans À trier)"))
         self.auto_checkbox.stateChanged.connect(self.set_auto_mode)
         settings_row.addWidget(self.auto_checkbox)
         settings_row.addStretch()
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Copier l’original (recommandé)", "Déplacer l’original"])
-        settings_row.addWidget(QLabel("Action :"))
+        self.mode_combo.addItems([tr("Copier l’original (recommandé)"), tr("Déplacer l’original")])
+        settings_row.addWidget(QLabel(tr("Action :")))
         settings_row.addWidget(self.mode_combo)
         root.addLayout(settings_row)
 
@@ -1003,8 +1161,79 @@ class MainWindow(QMainWindow):
         root.addWidget(splitter, 1)
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("Choisis un dossier à surveiller pour commencer.")
+        self.statusBar().showMessage(tr("Choisis un dossier à surveiller pour commencer."))
         self.update_stats()
+
+    def apply_preferences(self):
+        app = QApplication.instance()
+        theme = str(self.preferences.get("theme", "system"))
+        accent = QColor(str(self.preferences.get("accent", "#1c8c70")))
+        if not accent.isValid():
+            accent = QColor("#1c8c70")
+        if theme == "dark":
+            window, surface, field, text, muted, border = "#17202a", "#202c38", "#263746", "#edf4f8", "#a9bdc9", "#3b5263"
+            if app:
+                palette = QPalette()
+                palette.setColor(QPalette.Window, QColor(window))
+                palette.setColor(QPalette.Base, QColor(field))
+                palette.setColor(QPalette.Text, QColor(text))
+                palette.setColor(QPalette.Button, QColor(surface))
+                palette.setColor(QPalette.ButtonText, QColor(text))
+                app.setPalette(palette)
+        elif theme == "light":
+            window, surface, field, text, muted, border = "#f4f7fb", "#ffffff", "#ffffff", "#18324b", "#6a8298", "#d8e1ec"
+            if app:
+                app.setPalette(app.style().standardPalette())
+        else:
+            palette = app.style().standardPalette() if app else QPalette()
+            window = palette.color(QPalette.Window).name()
+            surface = palette.color(QPalette.Base).name()
+            field = palette.color(QPalette.Base).name()
+            text = palette.color(QPalette.Text).name()
+            muted = palette.color(QPalette.PlaceholderText).name()
+            border = palette.color(QPalette.Mid).name()
+            if app:
+                app.setPalette(palette)
+        hover = accent.darker(115).name()
+        background = str(self.preferences.get("background", ""))
+        image_rule = ""
+        if background and Path(background).expanduser().is_file():
+            image_rule = f'background-image: url("{Path(background).expanduser().as_posix()}"); background-position: center; background-repeat: no-repeat;'
+        self.setStyleSheet(f"""
+            QMainWindow {{ background-color: {window}; }}
+            QWidget#central {{ background-color: {window}; {image_rule} }}
+            QLabel {{ color: {text}; }}
+            QFrame#hero {{ background: {accent.name()}; border-radius: 18px; }}
+            QFrame#hero QLabel {{ color: white; }}
+            QFrame#statCard {{ background: {surface}; border: 1px solid {border}; border-radius: 12px; }}
+            QLabel#statValue {{ color: {text}; font-size: 22px; font-weight: 800; }}
+            QLabel#statCaption {{ color: {muted}; font-size: 12px; }}
+            QLabel#title {{ font-size: 30px; font-weight: 800; }}
+            QLabel#subtitle {{ color: #d5e6f0; font-size: 14px; }}
+            QLineEdit, QTextEdit, QComboBox, QSpinBox {{ background: {field}; color: {text}; border: 1px solid {border}; border-radius: 8px; padding: 8px; }}
+            QPushButton {{ background: {accent.name()}; color: white; border: none; border-radius: 8px; padding: 10px 16px; font-weight: 700; }}
+            QPushButton:hover {{ background: {hover}; }}
+            QPushButton#secondary {{ background: {surface}; color: {text}; border: 1px solid {border}; }}
+            QPushButton#danger {{ background: #fff0ee; color: #b43d36; }}
+            QTableView {{ background: {surface}; color: {text}; border: 1px solid {border}; border-radius: 12px; gridline-color: {border}; selection-background-color: {accent.name()}; selection-color: white; }}
+            QHeaderView::section {{ background: {surface}; color: {muted}; padding: 10px; border: none; font-weight: 700; }}
+            QCheckBox {{ color: {text}; padding: 6px; }}
+            QProgressBar {{ border: none; background: {border}; border-radius: 5px; height: 9px; text-align: center; }}
+            QProgressBar::chunk {{ background: {accent.name()}; border-radius: 5px; }}
+        """)
+
+    def open_preferences(self):
+        dialog = PreferencesDialog(self.preferences, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        old_language = str(self.preferences.get("language", "fr"))
+        self.preferences = dialog.values()
+        save_preferences(PREFERENCES_FILE, self.preferences)
+        set_language(str(self.preferences.get("language", "fr")))
+        self.apply_preferences()
+        self.setWindowTitle(tr("MDJR classeur") + " - " + tr("votre assistant documentaire local"))
+        if old_language != str(self.preferences.get("language", "fr")):
+            QMessageBox.information(self, tr("Préférences de Classeur"), tr("Les changements de langue seront appliqués au prochain démarrage."))
 
     def _setup_tray(self):
         self.tray = QSystemTrayIcon(self)
@@ -1192,15 +1421,16 @@ class MainWindow(QMainWindow):
             if not self.folder_paths():
                 self.watching = False
                 return
-            permission = QMessageBox.question(
-                self,
-                "Autoriser la surveillance automatique ?",
-                "MDJR classeur va analyser les fichiers déjà présents puis classer automatiquement les nouveaux fichiers pendant que la surveillance est active.\n\nLes fichiers ambigus seront placés dans « À trier / Autre ». Aucun fichier ne sera supprimé. Autoriser cette session ?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if permission != QMessageBox.Yes:
-                return
+            if bool(self.preferences.get("confirm_actions", True)):
+                permission = QMessageBox.question(
+                    self,
+                    "Autoriser la surveillance automatique ?",
+                    "MDJR classeur va analyser les fichiers déjà présents puis classer automatiquement les nouveaux fichiers pendant que la surveillance est active.\n\nLes fichiers ambigus seront placés dans « À trier / Autre ». Aucun fichier ne sera supprimé. Autoriser cette session ?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if permission != QMessageBox.Yes:
+                    return
             self.auto_checkbox.setChecked(True)
             self.watching = True
             source = Path(self.source_edit.text().strip()).expanduser()
@@ -1314,7 +1544,7 @@ class MainWindow(QMainWindow):
         if low:
             message += f"\n\n{low} proposition(s) ont une confiance faible et méritent une vérification."
         message += "\n\nLes dossiers nécessaires seront créés et les fichiers seront renommés selon les propositions affichées."
-        if QMessageBox.question(self, "Autoriser le classement", message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        if bool(self.preferences.get("confirm_actions", True)) and QMessageBox.question(self, "Autoriser le classement", message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         self.execute_items(items)
 
@@ -1453,6 +1683,10 @@ class MainWindow(QMainWindow):
             return
         source, destination = paths
         dialog = DuplicateDialog([source, destination], self)
+        dialog.exec()
+
+    def open_history(self):
+        dialog = HistoryDialog(self)
         dialog.exec()
 
     def open_rules(self):

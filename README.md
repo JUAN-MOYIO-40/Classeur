@@ -170,6 +170,16 @@ dist\MDJR_Classeur\MDJR_Classeur.exe
 
 Il faut partager tout le dossier `dist\MDJR_Classeur`, pas seulement le fichier exe.
 
+## Préférences et apparence
+
+Le bouton `Préférences` ouvre un espace simple organisé en onglets. La langue peut être réglée sur français ou anglais. Le changement de langue est appliqué au prochain démarrage afin de garantir que toute l’interface soit cohérente.
+
+Le thème `Système` est utilisé par défaut. Il suit la palette du système, tandis que les modes clair et sombre permettent de choisir une apparence stable. Une couleur d’accent personnalisée modifie les boutons, les sélections, les indicateurs et la barre de progression. Elle ne modifie jamais le contenu des documents.
+
+Une image locale peut être choisie comme fond. Elle est enregistrée comme préférence, n’est pas classée comme document et peut être retirée avec `Réinitialiser`. Une couche de couleur conserve la lisibilité des textes et des tableaux.
+
+L’onglet `Sécurité` rappelle que la suppression définitive des doublons ne peut pas être annulée par Classeur. Le bouton `Historique` permet de consulter les opérations réussies. Le bouton `Annuler la dernière opération` vérifie les empreintes avant de restaurer une session et ignore les fichiers qui ont changé.
+
 ## Première utilisation
 
 Crée deux dossiers séparés :
@@ -206,6 +216,8 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=. python tests/smoke_gui.py
 | `mdjr_classeur/classifier.py` | Classification et hiérarchie |
 | `mdjr_classeur/search_index.py` | Recherche locale |
 | `mdjr_classeur/cache.py` | Cache SQLite |
+| `mdjr_classeur/preferences.py` | Préférences persistantes et validation |
+| `mdjr_classeur/i18n.py` | Libellés français et anglais |
 | `mdjr_classeur/dedupe.py` | Doublons et quarantaine |
 | `mdjr_classeur/semantic.py` | Rapprochement local léger |
 | `examples/regles_professionnelles.json` | Exemple de règles personnalisées |
