@@ -19,7 +19,7 @@ Classeur peut :
 - créer une nouvelle branche quand aucune destination correcte n'existe
 - proposer un nom de fichier lisible
 - rechercher rapidement un fichier par mot clé
-- repérer les doublons exacts par contenu
+- repérer les doublons binaires et les doublons textuellement équivalents lorsqu’un contenu complet est disponible
 - placer les doublons dans une quarantaine avant toute suppression
 
 Le classement par défaut est une copie. L'original reste donc dans le dossier d'arrivée. Le déplacement doit être choisi volontairement. Les copies sont écrites dans un fichier temporaire puis rendues visibles seulement quand la copie est terminée.
@@ -123,11 +123,13 @@ La recherche fonctionne avec un index SQLite local. Les fichiers inchangés ne s
 
 ## Doublons
 
-Le bouton `Scanner les doublons` compare les contenus. Deux fichiers sont considérés comme identiques seulement si leur contenu binaire est le même. Les noms seuls ne suffisent pas.
+Le bouton `Scanner les doublons` compare le contenu réel des fichiers et non leurs noms. Le moteur utilise une empreinte SHA-256 pour les fichiers binaires identiques. Pour les formats textuels entièrement lisibles, il calcule aussi une signature du texte normalisé. Les espaces répétées et la casse ne créent donc pas artificiellement deux documents différents.
 
-Le moteur compare d'abord la taille, puis une empreinte rapide, puis calcule le SHA-256 complet pour les candidats. Les dossiers qui contiennent les mêmes fichiers peuvent aussi être signalés.
+Cette seconde comparaison reste volontairement prudente. Elle ne prétend pas reconnaître deux textes reformulés ou deux documents qui traitent du même sujet. Une égalité de contenu est différente d’une similarité de sujet.
 
-La suppression automatique est désactivée. Le choix recommandé est la quarantaine réversible. La suppression définitive demande une action séparée et une confirmation. Avant une quarantaine ou une suppression, Classeur vérifie que l’empreinte du fichier n’a pas changé depuis le scan.
+Lors d’un classement, un document déjà présent dans la destination n’est pas recopié si son contenu est identique ou si son texte normalisé est identique. L’interface indique le doublon conservé. Si deux documents différents portent le même nom proposé, un suffixe contrôlé comme `(1)` est ajouté. Aucun fichier existant n’est écrasé.
+
+La suppression automatique est désactivée. Le choix recommandé est la quarantaine. La suppression définitive demande une action séparée et une confirmation. Avant une opération de doublon, Classeur vérifie que les fichiers concernés n’ont pas changé depuis l’analyse.
 
 ## Profils de fonctionnement
 
@@ -138,6 +140,19 @@ La suppression automatique est désactivée. Le choix recommandé est la quarant
 | Sémantique locale | Rapprochement léger pour les cas difficiles | Activé seulement si nécessaire |
 
 Classeur n'embarque pas de grand modèle génératif dans la version standard. Le moteur local est déterministe et plus léger. Il est plus facile à expliquer et il ne demande pas de connexion.
+
+## Documentation
+
+Les documents suivants complètent ce README :
+
+| Document | Utilité |
+|---|---|
+| [Guide utilisateur](docs/GUIDE_UTILISATEUR.md) | Installation, premier classement, nommage, doublons, surveillance et annulation |
+| [Dépannage](docs/DEPANNAGE.md) | Diagnostic des problèmes courants et comportements de protection |
+| [Architecture](ARCHITECTURE.md) | Découpage des couches et règles de dépendance |
+| [Contribution](CONTRIBUTING.md) | Normes de code, tests, sécurité et revue |
+| [Hiérarchie](HIERARCHIE.md) | Principes de construction des destinations |
+| [Utilisation de GitHub](docs/UTILISATION_GITHUB.md) | Clonage, règles, commits et publication |
 
 ## Architecture
 
@@ -213,6 +228,15 @@ Depuis la racine du projet :
 python -m pytest -q
 ```
 
+Les scénarios d’intégration et les smoke tests peuvent être lancés ainsi :
+
+```bash
+PYTHONPATH=. python tests/integration_flow.py
+PYTHONPATH=. python tests/realtime_simulation.py
+QT_QPA_PLATFORM=offscreen PYTHONPATH=. python tests/smoke_gui.py
+QT_QPA_PLATFORM=offscreen PYTHONPATH=. python tests/smoke_preferences.py
+```
+
 Le test graphique hors écran sous Linux :
 
 ```bash
@@ -224,7 +248,14 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=. python tests/smoke_gui.py
 | Fichier | Rôle |
 |---|---|
 | `main.py` | Point d'entrée |
-| `mdjr_classeur/app.py` | Interface, surveillance et opérations |
+| `mdjr_classeur/app.py` | Composition de l’application et orchestration de l’interface |
+| `mdjr_classeur/application/services.py` | Classification, scan et annulation |
+| `mdjr_classeur/application/naming.py` | Proposition de noms fondés sur le contenu lisible |
+| `mdjr_classeur/application/document_identity.py` | Empreintes binaires et signatures textuelles |
+| `mdjr_classeur/application/duplicates.py` | Service applicatif de détection et traitement des doublons |
+| `mdjr_classeur/domain/` | Modèles métier, chemins et planification |
+| `mdjr_classeur/infrastructure/` | Fichiers, historique, SQLite et surveillance |
+| `mdjr_classeur/presentation/` | Fenêtres, dialogues, modèle Qt et workers |
 | `mdjr_classeur/classifier.py` | Classification et hiérarchie |
 | `mdjr_classeur/search_index.py` | Recherche locale |
 | `mdjr_classeur/cache.py` | Cache SQLite |
@@ -235,6 +266,9 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=. python tests/smoke_gui.py
 | `examples/regles_professionnelles.json` | Exemple de règles personnalisées |
 | `HIERARCHIE.md` | Règles de construction de l'arborescence |
 | `ARCHITECTURE.md` | Séparation des responsabilités et guide de contribution |
+| `CONTRIBUTING.md` | Normes de contribution et de tests |
+| `docs/GUIDE_UTILISATEUR.md` | Guide d’utilisation complet |
+| `docs/DEPANNAGE.md` | Résolution des problèmes courants |
 | `build_windows.bat` | Construction de l'exécutable Windows |
 | `requirements.txt` | Dépendances |
 | `tests/` | Tests automatisés |
