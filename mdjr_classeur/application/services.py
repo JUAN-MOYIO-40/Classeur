@@ -6,6 +6,7 @@ from pathlib import Path
 from ..cache import ClassificationCache
 from ..classifier import Classification, LocalClassifier
 from ..domain.models import PlanItem
+from ..domain.paths import resolve_folder_pair
 from ..domain.planning import build_destination
 from ..infrastructure.filesystem import is_ignored_file
 
@@ -31,8 +32,7 @@ class ScanService:
         self.classification = classification
 
     def scan(self, source_dir: Path, destination_dir: Path) -> list[PlanItem]:
-        if not source_dir.exists() or not source_dir.is_dir():
-            raise FileNotFoundError("Le dossier surveillé n’existe pas.")
+        source_dir, destination_dir = resolve_folder_pair(source_dir, destination_dir)
         items: list[PlanItem] = []
         for path in sorted(source_dir.rglob("*")):
             if not path.is_file() or path.is_symlink() or is_ignored_file(path):

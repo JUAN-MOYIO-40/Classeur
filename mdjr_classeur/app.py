@@ -22,9 +22,12 @@ from .search_index import SearchIndex, SearchRecord
 from .i18n import set_language, tr
 from .preferences import load_preferences, save_preferences
 from .domain.models import PlanItem
+from .domain.paths import FolderPairError, resolve_folder_pair
 from .domain.planning import build_destination
 from .application.services import ClassificationService, ScanService, UndoService
 from .application.indexing import SearchIndexService
+from .application.duplicates import DuplicateService
+from .application.plan import PlanEditService
 from .infrastructure.filesystem import FileOperationService, atomic_write_text, is_ignored_file
 from .infrastructure.history import HistoryRepository
 from .infrastructure.watcher import Observer, WatchEventHandler
@@ -67,9 +70,11 @@ class MainWindow(QMainWindow):
         self.history_repository = HistoryRepository(LOG_FILE)
         self.undo_service = UndoService(self.history_repository)
         self.file_operation_service = FileOperationService()
+        self.duplicate_service = DuplicateService()
+        self.plan_edit_service = PlanEditService()
         self.search_worker = None
         self.search_dialog = None
-        self.model = PlanModel()
+        self.model = PlanModel(self.plan_edit_service)
         self.scan_thread = None
         self.apply_thread = None
         self.known_keys: set[str] = set()
@@ -374,24 +379,18 @@ class MainWindow(QMainWindow):
             self._save_config()
 
     def folder_paths(self) -> tuple[Path, Path] | None:
-        source = Path(self.source_edit.text().strip()).expanduser()
-        destination = Path(self.destination_edit.text().strip()).expanduser()
-        if not source or not destination or str(source) == "." or str(destination) == ".":
+        source_text = self.source_edit.text().strip()
+        destination_text = self.destination_edit.text().strip()
+        if not source_text or not destination_text:
             QMessageBox.warning(self, "Dossiers requis", "Choisis un dossier à surveiller et un dossier de classement.")
             return None
-        if not source.exists() or not source.is_dir():
-            QMessageBox.warning(self, "Dossier invalide", "Le dossier à surveiller n’existe pas.")
-            return None
-        source_resolved = source.resolve()
-        destination_resolved = destination.resolve()
-        if source_resolved == destination_resolved:
-            QMessageBox.warning(self, "Dossiers identiques", "Le dossier de classement doit être différent du dossier surveillé.")
-            return None
-        if source_resolved in destination_resolved.parents or destination_resolved in source_resolved.parents:
-            QMessageBox.warning(self, "Dossiers imbriqués", "Choisis deux dossiers séparés. Un dossier source ne doit pas contenir le dossier de classement, ni l’inverse.")
+        try:
+            source, destination = resolve_folder_pair(Path(source_text), Path(destination_text))
+        except FolderPairError as exc:
+            QMessageBox.warning(self, "Configuration invalide", str(exc))
             return None
         self._save_config()
-        return source_resolved, destination_resolved
+        return source, destination
 
     def scan_existing(self):
         paths = self.folder_paths()
@@ -727,7 +726,7 @@ class MainWindow(QMainWindow):
         if not paths:
             return
         source, destination = paths
-        dialog = DuplicateDialog([source, destination], self)
+        dialog = DuplicateDialog([source, destination], self, self.duplicate_service, CONFIG_DIR / "quarantaine")
         dialog.exec()
 
     def open_history(self):

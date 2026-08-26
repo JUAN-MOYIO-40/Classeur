@@ -4,15 +4,16 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtGui import QColor
 
 from ..domain.models import PlanItem
-from ..domain.planning import build_destination
+from ..application.plan import PlanEditService
 from ..i18n import tr
 
 
 class PlanModel(QAbstractTableModel):
     headers = ["Fichier", "Matière", "Nature", "Arborescence", "Confiance", "Lecture", "Destination", "État"]
 
-    def __init__(self):
+    def __init__(self, plan_service: PlanEditService | None = None):
         super().__init__()
+        self.plan_service = plan_service or PlanEditService()
         self.items: list[PlanItem] = []
         self.checked: set[str] = set()
 
@@ -51,12 +52,11 @@ class PlanModel(QAbstractTableModel):
             return True
         if role == Qt.EditRole and index.column() in (1, 2):
             text = str(value).strip() or (item.classification.subject if index.column() == 1 else item.classification.category)
-            if index.column() == 1:
-                item.classification.subject = text
-            else:
-                item.classification.category = text
-            item.classification.hierarchy = tuple(part for part in (item.classification.year, item.classification.domain, item.classification.subject, item.classification.topic, item.classification.category) if part and part not in {"À trier", "Autre"})
-            self.rebuild_destination(item)
+            field = "subject" if index.column() == 1 else "category"
+            try:
+                self.plan_service.edit(item, field, text)
+            except ValueError:
+                return False
             self.dataChanged.emit(index, self.index(index.row(), 7), [Qt.DisplayRole, Qt.EditRole])
             return True
         return False
@@ -73,10 +73,6 @@ class PlanModel(QAbstractTableModel):
         if role == Qt.DisplayRole and orientation == Qt.Horizontal:
             return tr(self.headers[section])
         return None
-
-    def rebuild_destination(self, item: PlanItem):
-        root = item.destination_root or item.destination_dir.parents[1]
-        item.destination_dir, item.destination_file, item.destination_reason = build_destination(root, item.classification, item.source.suffix, item.source.stem)
 
     def set_items(self, items: list[PlanItem]):
         self.beginResetModel()

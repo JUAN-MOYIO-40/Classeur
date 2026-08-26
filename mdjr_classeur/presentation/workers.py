@@ -6,11 +6,11 @@ from PySide6.QtCore import QThread, Signal
 
 from ..cache import ClassificationCache
 from ..classifier import LocalClassifier
-from ..dedupe import DuplicateReport, scan_duplicates
+from ..application.duplicates import DuplicateService
 from ..domain.models import PlanItem
-from ..application.services import ClassificationService, ScanService, UndoService
+from ..application.services import ClassificationService, ScanService
 from ..application.indexing import SearchIndexService
-from ..infrastructure.filesystem import FileOperationService, is_ignored_file
+from ..infrastructure.filesystem import FileOperationService
 from ..search_index import SearchIndex
 
 
@@ -76,13 +76,14 @@ class DuplicateWorker(QThread):
     completed = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, roots: list[Path]):
+    def __init__(self, roots: list[Path], service: DuplicateService | None = None):
         super().__init__()
         self.roots = roots
+        self.service = service or DuplicateService()
 
     def run(self):
         try:
-            self.completed.emit(scan_duplicates(self.roots))
+            self.completed.emit(self.service.scan(self.roots))
         except Exception as exc:
             self.failed.emit(str(exc))
 

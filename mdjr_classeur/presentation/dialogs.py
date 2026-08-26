@@ -3,29 +3,23 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
-    QCheckBox, QColorDialog, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-    QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QTabWidget, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QHeaderView, QWidget,
+    QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget,
+    QTableWidget, QTableWidgetItem, QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..infrastructure.history import HistoryRepository
 from ..i18n import tr
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (
-    QComboBox, QFormLayout, QHeaderView, QLineEdit, QMessageBox, QPushButton,
-    QTableWidget, QTableWidgetItem, QTextEdit, QTreeWidget, QTreeWidgetItem,
-)
 
 from ..classifier import LocalClassifier
-from ..dedupe import DuplicateReport, delete_duplicates, format_bytes, quarantine_duplicates
+from ..dedupe import DuplicateReport, format_bytes
+from ..application.duplicates import DuplicateService
 from ..domain.models import PlanItem
 from ..search_index import SearchIndex, SearchRecord
 from .workers import DuplicateWorker
-
 
 
 class PreferencesDialog(QDialog):
@@ -163,11 +157,13 @@ class HistoryDialog(QDialog):
                 self.table.setItem(row, column, QTableWidgetItem(str(value)))
 
 class DuplicateDialog(QDialog):
-    def __init__(self, roots: list[Path], parent=None):
+    def __init__(self, roots: list[Path], parent=None, service: DuplicateService | None = None, quarantine_root: Path | None = None):
         super().__init__(parent)
         self.setWindowTitle(tr("Analyse intelligente des doublons") + " - " + tr("MDJR classeur"))
         self.resize(980, 620)
         self.roots = roots
+        self.service = service or DuplicateService()
+        self.quarantine_root = quarantine_root or (Path.home() / ".mdjr_classeur" / "quarantaine")
         self.report: DuplicateReport | None = None
         self.worker: DuplicateWorker | None = None
         layout = QVBoxLayout(self)
@@ -260,7 +256,7 @@ class DuplicateDialog(QDialog):
         )
         if answer != QMessageBox.Yes:
             return
-        moved = quarantine_duplicates(self.report, CONFIG_DIR / "quarantaine")
+        moved = self.service.quarantine(self.report, self.quarantine_root)
         self.summary.setText(f"{len(moved)} élément(s) déplacé(s) vers la quarantaine locale.")
         self.quarantine_button.setEnabled(False)
         self.delete_button.setEnabled(False)
@@ -279,7 +275,7 @@ class DuplicateDialog(QDialog):
         )
         if answer != QMessageBox.Yes:
             return
-        removed = delete_duplicates(self.report)
+        removed = self.service.delete_permanently(self.report)
         self.summary.setText(f"{removed} élément(s) supprimé(s) définitivement.")
         self.delete_button.setEnabled(False)
         self.quarantine_button.setEnabled(False)
