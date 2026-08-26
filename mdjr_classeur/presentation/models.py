@@ -9,7 +9,7 @@ from ..i18n import tr
 
 
 class PlanModel(QAbstractTableModel):
-    headers = ["Fichier", "Matière", "Nature", "Arborescence", "Confiance", "Lecture", "Destination", "État"]
+    headers = ["Fichier original", "Nom proposé", "Matière", "Nature", "Arborescence", "Confiance", "Lecture", "Destination", "État"]
 
     def __init__(self, plan_service: PlanEditService | None = None):
         super().__init__()
@@ -21,22 +21,25 @@ class PlanModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(self.items)
 
     def columnCount(self, parent=QModelIndex()):
-        return 8
+        return 9
 
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
             return None
         item = self.items[index.row()]
         review = tr("À vérifier") if item.classification.needs_review else tr("Proposition fiable")
-        values = [item.source.name, item.classification.subject, item.classification.category, item.hierarchy_label, f"{item.confidence} % - {review}", tr(item.classification.content_status or "non disponible"), str(item.destination_file), item.status]
+        proposed = item.suggested_name or item.destination_file.stem or item.source.stem
+        values = [item.source.name, f"{proposed}{item.source.suffix}", item.classification.subject, item.classification.category, item.hierarchy_label, f"{item.confidence} % - {review}", tr(item.classification.content_status or "non disponible"), str(item.destination_file), tr(item.status)]
         if role in (Qt.DisplayRole, Qt.EditRole):
             return values[index.column()]
         if role == Qt.CheckStateRole and index.column() == 0:
             return Qt.Checked if item.key in self.checked else Qt.Unchecked
-        if role == Qt.ForegroundRole and index.column() == 4:
+        if role == Qt.ForegroundRole and index.column() == 5:
             return QColor("#159570" if item.confidence >= 75 else "#cc8a20" if item.confidence >= 45 else "#d9534f")
         if role == Qt.ToolTipRole:
-            return item.classification.reason
+            proposed = item.suggested_name or item.destination_file.stem or item.source.stem
+            identity = "empreinte SHA-256 calculée" if item.sha256 else "empreinte indisponible"
+            return f"{item.rename_reason or 'Nom d’origine conservé'} | Confiance nom : {item.rename_confidence} % | {identity}"
         return None
 
     def setData(self, index, value, role=Qt.EditRole):
@@ -50,14 +53,14 @@ class PlanModel(QAbstractTableModel):
                 self.checked.discard(item.key)
             self.dataChanged.emit(index, index, [Qt.CheckStateRole])
             return True
-        if role == Qt.EditRole and index.column() in (1, 2):
-            text = str(value).strip() or (item.classification.subject if index.column() == 1 else item.classification.category)
-            field = "subject" if index.column() == 1 else "category"
+        if role == Qt.EditRole and index.column() in (2, 3):
+            text = str(value).strip() or (item.classification.subject if index.column() == 2 else item.classification.category)
+            field = "subject" if index.column() == 2 else "category"
             try:
                 self.plan_service.edit(item, field, text)
             except ValueError:
                 return False
-            self.dataChanged.emit(index, self.index(index.row(), 7), [Qt.DisplayRole, Qt.EditRole])
+            self.dataChanged.emit(index, self.index(index.row(), 8), [Qt.DisplayRole, Qt.EditRole])
             return True
         return False
 
@@ -65,7 +68,7 @@ class PlanModel(QAbstractTableModel):
         flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
         if index.column() == 0:
             flags |= Qt.ItemIsUserCheckable
-        if index.column() in (1, 2):
+        if index.column() in (2, 3):
             flags |= Qt.ItemIsEditable
         return flags
 

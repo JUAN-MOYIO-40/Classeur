@@ -244,13 +244,14 @@ class MainWindow(QMainWindow):
         self.table.setAlternatingRowColors(True)
         self.table.setSortingEnabled(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeToContents)
         splitter.addWidget(self.table)
         self.explain = QTextEdit()
         self.explain.setReadOnly(True)
@@ -484,9 +485,9 @@ class MainWindow(QMainWindow):
                     if previous_key != key:
                         self.pending_signatures[path_id] = key
                         continue
-                    classification = self.classification_service.classify(path)
-                    target_dir, target, reason = build_destination(destination, classification, path.suffix, path.stem)
-                    item = PlanItem(path, classification, target_dir, target, destination_root=destination, destination_reason=reason)
+                    item = self.scan_service.analyze_path(path, destination, existing=False)
+                    if item is None:
+                        continue
                     fresh.append(item)
                     self.search_index.upsert_plan_item(item, "en attente")
                     self.known_keys.add(key)
@@ -621,7 +622,9 @@ class MainWindow(QMainWindow):
         item = self.model.items[rows[0].row()]
         preview = item.classification.extracted_preview or "Aucun extrait textuel disponible pour ce format."
         content_status = item.classification.content_status or "état d’extraction non disponible (ancienne classification)"
-        self.explain.setPlainText(f"Pourquoi cette proposition ?\n{item.classification.reason}\n\nQualité de lecture : {content_status}\n\nAperçu local du contenu :\n{preview}\n\nDestination :\n{item.destination_file}\n\nArborescence : {item.destination_reason or 'création ou réutilisation déterminée pendant l’analyse.'}")
+        proposed = item.suggested_name or item.destination_file.stem or item.source.stem
+        identity = item.sha256[:16] + "…" if item.sha256 else "indisponible"
+        self.explain.setPlainText(f"Pourquoi cette proposition ?\n{item.classification.reason}\n\nNom original : {item.source.name}\nNom proposé : {proposed}{item.source.suffix}\nConfiance du nom : {item.rename_confidence} %\nJustification du nom : {item.rename_reason or 'nom d’origine conservé'}\n\nQualité de lecture : {content_status}\nIdentité SHA-256 : {identity}\n\nAperçu local du contenu :\n{preview}\n\nDestination :\n{item.destination_file}\n\nArborescence : {item.destination_reason or 'création ou réutilisation déterminée pendant l’analyse.'}")
 
     def set_auto_mode(self, state):
         self.auto_mode = state == Qt.Checked
@@ -662,6 +665,7 @@ class MainWindow(QMainWindow):
         keys = set()
         log_entries = []
         errors = []
+        duplicates = []
         items_by_source = {str(item.source): item for item in self.model.items}
         for result in results:
             if not isinstance(result, dict):
@@ -673,6 +677,10 @@ class MainWindow(QMainWindow):
                 if item:
                     item.status = "Échec : " + result.get("error", "erreur inconnue")
                 continue
+            if result.get("operation") == "duplicate":
+                duplicates.append(f"{Path(source).name} déjà présent : {result.get('duplicate_of', 'emplacement inconnu')}")
+                keys.add(item.key if item else source)
+                continue
             keys.add(item.key if item else source)
             log_entries.append(result)
             target = Path(result["target"])
@@ -683,6 +691,8 @@ class MainWindow(QMainWindow):
         self.save_history(log_entries)
         self.model.remove_items(keys)
         summary = f"{len(log_entries)} fichier(s) classé(s) avec succès."
+        if duplicates:
+            summary += f" {len(duplicates)} doublon(s) exact(s) conservé(s) sans copie."
         if errors:
             summary += f" {len(errors)} échec(s) conservé(s) dans la file."
             QMessageBox.warning(self, "Classement partiellement terminé", summary + "\n\n" + "\n".join(errors[:8]))

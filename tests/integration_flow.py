@@ -32,6 +32,7 @@ with TemporaryDirectory() as root:
     second_result = []
     second.completed.connect(lambda entries: second_result.extend(entries))
     second.run()
-    assert second_result and Path(second_result[0]["target"]).name.endswith("(1).txt")
+    assert second_result and second_result[0]["operation"] == "duplicate"
+    assert Path(second_result[0]["duplicate_of"]).exists()
 
 print("INTEGRATION_FLOW_OK")

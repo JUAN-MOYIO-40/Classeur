@@ -107,6 +107,14 @@ Un exemple de résultat peut être :
 
 Il est préférable de commencer avec des mots clés précis. Les mots très courts peuvent provoquer des résultats inattendus. Après une modification du fichier, relance l'analyse afin que le cache soit recalculé.
 
+## Nommage intelligent et doublons
+
+Pendant l’analyse, Classeur lit le contenu réellement disponible, détecte un titre possible et affiche séparément le nom original et le nom proposé. Le nom proposé combine prudemment les informations reconnues, par exemple la période, la matière, le thème, la nature et un titre lisible. Lorsque le contenu est absent, illisible ou dans un format non pris en charge, Classeur ne prétend pas comprendre le document et conserve le nom d’origine ou produit une proposition de faible confiance.
+
+Avant une copie ou un déplacement, Classeur calcule une empreinte SHA-256. Il compare aussi, lorsque le document textuel est entièrement lisible, une signature du texte normalisé. Deux fichiers dont les noms sont différents mais dont le contenu est identique ou textuellement équivalent ne sont donc pas recopiés dans la destination. La décision apparaît dans la file sous le statut de doublon exact conservé. Les collisions de noms non identiques reçoivent un suffixe contrôlé comme `(1)` au lieu d’écraser un fichier existant.
+
+Le mode recommandé reste la copie de l’original. Le déplacement peut renommer directement le fichier déplacé, mais il doit être vérifié par l’utilisateur avant validation. Aucune suppression n’est déclenchée par le nommage ou par la détection de doublons.
+
 ## Recherche rapide
 
 Le bouton `Recherche rapide` recherche dans les noms, chemins, années, domaines, matières, thèmes, catégories et extraits de contenu. Les accents sont normalisés. Une recherche comme `scolarite` peut retrouver `scolarité`.

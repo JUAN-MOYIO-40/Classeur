@@ -18,6 +18,12 @@ class PlanItem:
     existing: bool = False
     destination_root: Path | None = None
     destination_reason: str = ""
+    suggested_name: str = ""
+    sha256: str = ""
+    normalized_text_sha256: str = ""
+    text_length: int = 0
+    rename_reason: str = ""
+    rename_confidence: int = 0
 
     @property
     def confidence(self) -> int:

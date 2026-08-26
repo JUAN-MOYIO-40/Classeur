@@ -46,7 +46,7 @@ def reuse_existing_folder(parent: Path, desired: str) -> tuple[Path, str]:
     return parent / desired_clean, "nouveau dossier prévu"
 
 
-def build_destination(root: Path, classification: Classification, source_suffix: str, source_stem: str) -> tuple[Path, Path, str]:
+def build_destination(root: Path, classification: Classification, source_suffix: str, source_stem: str, name_stem: str | None = None) -> tuple[Path, Path, str]:
     requested_levels = list(classification.hierarchy) if classification.hierarchy else [classification.subject or "À trier", classification.category or "Autre"]
     levels: list[str] = []
     for level in requested_levels:
@@ -60,5 +60,5 @@ def build_destination(root: Path, classification: Classification, source_suffix:
     for level in levels[:5]:
         current, reason = reuse_existing_folder(current, level)
         reasons.append(f"{level} : {reason}")
-    title = clean_filename(classification.title or source_stem, "Document")
+    title = clean_filename(name_stem or classification.title or source_stem, "Document")
     return current, (current / title).with_suffix(source_suffix.lower()), "; ".join(reasons)
