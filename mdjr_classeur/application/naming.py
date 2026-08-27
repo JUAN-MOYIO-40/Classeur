@@ -18,6 +18,26 @@ class FilenameProposalService:
     """Produit des noms descriptifs sans prétendre résumer un texte inconnu."""
 
     GENERIC_TITLES = {"document", "cours", "notes", "page", "untitled", "sans titre"}
+    FORBIDDEN_TITLE_MARKERS = (
+        "date de naissance", "lieu de naissance", "né le", "nee le", "nom de naissance",
+        "nom :", "prénom :", "prenom :", "matricule", "numéro de sécurité", "numero de securite",
+        "nationalité", "nationalite", "sexe :", "adresse :", "téléphone :", "telephone :",
+        "email :", "e-mail :", "date d'expiration", "date d expiration",
+    )
+
+    @classmethod
+    def _is_safe_title(cls, value: str) -> bool:
+        folded = fold(value)
+        if not folded or folded in {fold(item) for item in cls.GENERIC_TITLES}:
+            return False
+        if any(marker in folded for marker in cls.FORBIDDEN_TITLE_MARKERS):
+            return False
+        tokens = folded.split()
+        if len(tokens) <= 2 and sum(char.isdigit() for char in value) >= max(4, len(value) // 3):
+            return False
+        if re.fullmatch(r"[\d\s./_-]+", value):
+            return False
+        return len(tokens) >= 2 or any(char.isalpha() for char in value)
 
     def propose(self, path: Path, classification: Classification, content: str) -> FilenameProposal:
         original = clean_filename(path.stem, "Document")
@@ -29,12 +49,12 @@ class FilenameProposalService:
             cleaned = clean_filename(value, "")
             if cleaned and cleaned not in {"À trier", "Autre"} and fold(cleaned) not in fold(" ".join(parts)):
                 parts.append(cleaned)
-        detected_is_useful = bool(detected) and fold(detected) not in self.GENERIC_TITLES and len(fold(detected)) >= 5
+        detected_is_useful = bool(detected) and len(fold(detected)) >= 5 and self._is_safe_title(detected)
         if detected_is_useful:
             parts.append(detected)
         elif content.strip():
             first_line = next((re.sub(r"\s+", " ", line).strip() for line in content.splitlines() if line.strip()), "")
-            if first_line and len(first_line) >= 8:
+            if first_line and len(first_line) >= 8 and self._is_safe_title(first_line):
                 parts.append(clean_filename(first_line[:90], original))
         if not parts:
             return FilenameProposal(original, "nom d’origine conservé : aucun titre fiable détecté", 25)

@@ -24,6 +24,14 @@ class PlanItem:
     text_length: int = 0
     rename_reason: str = ""
     rename_confidence: int = 0
+    agent_action: str = "propose_for_review"
+    agent_reason: str = ""
+    agent_requires_confirmation: bool = True
+    human_corrected_fields: set[str] | None = None
+
+    def __post_init__(self):
+        if self.human_corrected_fields is None:
+            self.human_corrected_fields = set()
 
     @property
     def confidence(self) -> int:

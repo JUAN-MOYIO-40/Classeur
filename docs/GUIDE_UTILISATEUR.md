@@ -84,7 +84,7 @@ L’image de fond est purement visuelle. Elle ne quitte pas l’ordinateur et n�
 
 ## Limites à connaître
 
-Classeur lit les formats texte, les PDF textuels et certains formats bureautiques XML. Il ne réalise pas encore d’OCR pour les scans et les images. Une confiance affichée est un indicateur heuristique et non une garantie de justesse.
+Classeur lit les formats texte, les PDF textuels et certains formats bureautiques XML. Pour les PDF scannés, il peut utiliser un OCR local avec Tesseract et Poppler lorsqu’ils sont installés. Si ces outils sont absents, le document est conservé et l’état `OCR indisponible` est affiché. Une confiance affichée est un indicateur heuristique et non une garantie de justesse. Voir [OCR local](OCR_LOCAL.md).
 
 Il est conseillé de tester l’application sur une copie de ses documents importants, de conserver une sauvegarde séparée et de vérifier les propositions avant d’utiliser le mode déplacement ou le classement automatique.
 

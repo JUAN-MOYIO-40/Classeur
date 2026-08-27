@@ -4,13 +4,16 @@ import shutil
 from pathlib import Path
 
 from ..cache import ClassificationCache
-from ..classifier import Classification, LocalClassifier, read_content
+from ..classifier import Classification, LocalClassifier, read_content, read_content_details
 from ..domain.models import PlanItem
 from ..domain.paths import resolve_folder_pair
 from ..domain.planning import build_destination
 from .document_identity import ContentIdentityService
 from .naming import FilenameProposalService
 from ..infrastructure.filesystem import is_ignored_file
+from .agent import AgentLedger
+from .agent_brain import DocumentAgentBrain
+from .learning import LearningMemory
 
 
 class ClassificationService:
@@ -18,22 +21,27 @@ class ClassificationService:
         self.classifier = classifier
         self.cache = cache
 
-    def classify(self, path: Path) -> Classification:
+    def classify(self, path: Path, content: str | None = None, extraction_status: str | None = None) -> Classification:
         if self.cache is None:
-            return self.classifier.classify(path)
-        cached = self.cache.get(path, self.classifier.rules_version)
+            return self.classifier.classify(path, content=content, extraction_status=extraction_status)
+        cached = self.cache.get(path, self.classifier.rules_version) if content is None else None
         if cached is not None:
             return cached
-        result = self.classifier.classify(path)
+        result = self.classifier.classify(path, content=content, extraction_status=extraction_status)
         self.cache.put(path, self.classifier.rules_version, result)
         return result
 
 
 class ScanService:
-    def __init__(self, classification: ClassificationService, naming=None, identity=None):
+    def __init__(self, classification: ClassificationService, naming=None, identity=None, ledger: AgentLedger | None = None, brain: DocumentAgentBrain | None = None, learning: LearningMemory | None = None):
         self.classification = classification
         self.naming = naming or FilenameProposalService()
         self.identity = identity or ContentIdentityService()
+        self.ledger = ledger
+        self.brain = brain or DocumentAgentBrain()
+        self.learning = learning
+        if self.ledger is not None:
+            self.ledger.recover_interrupted()
 
     def analyze_path(self, path: Path, destination_dir: Path, existing: bool = True) -> PlanItem | None:
         if not path.is_file() or path.is_symlink() or is_ignored_file(path):
@@ -43,28 +51,75 @@ class ScanService:
             return None
         except ValueError:
             pass
-        classification = self.classification.classify(path)
-        content = read_content(path)
-        name_proposal = self.naming.propose(path, classification, content)
-        identity = self.identity.identify(path, content)
-        destination, target, reason = build_destination(destination_dir, classification, path.suffix, path.stem, name_stem=name_proposal.stem)
-        return PlanItem(
+        if self.ledger is not None and not self.ledger.needs_processing(path):
+            return None
+        if self.ledger is not None:
+            self.ledger.start(path)
+        try:
+            content, extraction_status = read_content_details(path)
+            classification = self.classification.classify(path, content=content, extraction_status=extraction_status)
+            if self.learning is not None and (classification.needs_review or classification.confidence < 80):
+                learned = self.learning.learned_labels(filename=path.name, context=content[:12000])
+                if learned:
+                    classification.subject = learned.get("subject", classification.subject)
+                    classification.category = learned.get("category", classification.category)
+                    if learned.get("hierarchy"):
+                        classification.hierarchy = tuple(part.strip() for part in learned["hierarchy"].split("/") if part.strip())
+                    classification.reason += " Correction(s) humaine(s) similaire(s) réutilisée(s) localement."
+                    classification.confidence = max(classification.confidence, 70)
+            name_proposal = self.naming.propose(path, classification, content)
+            identity = self.identity.identify(path, content)
+            destination, target, reason = build_destination(destination_dir, classification, path.suffix, path.stem, name_stem=name_proposal.stem)
+            item = PlanItem(
             path, classification, destination, target, existing=existing,
             destination_root=destination_dir, destination_reason=reason,
             suggested_name=name_proposal.stem, sha256=identity.sha256 if identity else "",
             normalized_text_sha256=identity.normalized_text_sha256 if identity else "",
             text_length=identity.text_length if identity else len(content),
-            rename_reason=name_proposal.reason, rename_confidence=name_proposal.confidence,
-        )
+                rename_reason=name_proposal.reason, rename_confidence=name_proposal.confidence,
+            )
+            decision = self.brain.decide(item)
+            item.agent_action = decision.action.value
+            item.agent_reason = decision.reason
+            item.agent_requires_confirmation = decision.requires_confirmation
+            if self.ledger is not None:
+                self.ledger.finish(path, "done", target=item.destination_file)
+            return item
+        except Exception as exc:
+            if self.ledger is not None:
+                self.ledger.finish(path, "failed", str(exc))
+            raise
+
+    def iter_scan(self, source_dir: Path, destination_dir: Path):
+        """Parcourt le dossier sans matérialiser tous les chemins ou résultats.
+
+        L’ordre n’est volontairement pas trié : trier un million de chemins
+        imposerait de les conserver en mémoire avant de commencer le travail.
+        """
+        source_dir, destination_dir = resolve_folder_pair(source_dir, destination_dir)
+        try:
+            paths = source_dir.rglob("*")
+            for path in paths:
+                item = self.analyze_path(path, destination_dir)
+                if item is not None:
+                    yield item
+        except OSError:
+            return
+
+    def scan_batches(self, source_dir: Path, destination_dir: Path, batch_size: int = 250):
+        """Produit des lots bornés pour permettre une progression et une reprise."""
+        batch: list[PlanItem] = []
+        for item in self.iter_scan(source_dir, destination_dir):
+            batch.append(item)
+            if len(batch) >= max(1, int(batch_size)):
+                yield batch
+                batch = []
+        if batch:
+            yield batch
 
     def scan(self, source_dir: Path, destination_dir: Path) -> list[PlanItem]:
-        source_dir, destination_dir = resolve_folder_pair(source_dir, destination_dir)
-        items: list[PlanItem] = []
-        for path in sorted(source_dir.rglob("*")):
-            item = self.analyze_path(path, destination_dir)
-            if item is not None:
-                items.append(item)
-        return items
+        """Compatibilité avec l’interface actuelle ; les nouveaux appels doivent utiliser scan_batches."""
+        return [item for batch in self.scan_batches(source_dir, destination_dir) for item in batch]
 
 
 class UndoService:

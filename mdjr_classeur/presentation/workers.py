@@ -15,6 +15,7 @@ from ..search_index import SearchIndex
 
 
 class ScanWorker(QThread):
+    batch_ready = Signal(object)
     completed = Signal(object, int)
     failed = Signal(str)
 
@@ -26,8 +27,12 @@ class ScanWorker(QThread):
 
     def run(self):
         try:
-            items = self.service.scan(self.source_dir, self.destination_dir)
-            self.completed.emit(items, len(items))
+            count = 0
+            for batch in self.service.scan_batches(self.source_dir, self.destination_dir):
+                count += len(batch)
+                self.batch_ready.emit(batch)
+            # Le signal final conserve le contrat historique de l’interface.
+            self.completed.emit([], count)
         except Exception as exc:
             self.failed.emit(str(exc))
 

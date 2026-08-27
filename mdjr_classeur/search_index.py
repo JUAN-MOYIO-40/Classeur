@@ -50,14 +50,22 @@ class SearchIndex:
                 status TEXT NOT NULL,
                 size INTEGER NOT NULL,
                 mtime_ns INTEGER NOT NULL,
+                sha256 TEXT NOT NULL DEFAULT '',
+                normalized_text_sha256 TEXT NOT NULL DEFAULT '',
                 updated_at REAL NOT NULL
             )"""
         )
         columns = {row[1] for row in self.connection.execute("PRAGMA table_info(documents)").fetchall()}
         if "hierarchy" not in columns:
             self.connection.execute("ALTER TABLE documents ADD COLUMN hierarchy TEXT NOT NULL DEFAULT ''")
+        if "sha256" not in columns:
+            self.connection.execute("ALTER TABLE documents ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''")
+        if "normalized_text_sha256" not in columns:
+            self.connection.execute("ALTER TABLE documents ADD COLUMN normalized_text_sha256 TEXT NOT NULL DEFAULT ''")
         self.connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)")
         self.connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_mtime ON documents(mtime_ns)")
+        self.connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_sha256 ON documents(sha256)")
+        self.connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_text_sha256 ON documents(normalized_text_sha256)")
         try:
             fts_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(documents_fts)").fetchall()}
             if fts_columns and "hierarchy" not in fts_columns:
@@ -87,7 +95,7 @@ class SearchIndex:
         ).fetchone()
         return row is None or tuple(row) != (signature[0], signature[1], status)
 
-    def upsert(self, path: Path, classification: Classification, status: str = "classé", hierarchy: str = "", commit: bool = True) -> bool:
+    def upsert(self, path: Path, classification: Classification, status: str = "classé", hierarchy: str = "", commit: bool = True, sha256: str = "", normalized_text_sha256: str = "") -> bool:
         hierarchy = hierarchy or " / ".join(classification.hierarchy)
         signature = self._file_signature(path)
         if signature is None:
@@ -104,6 +112,8 @@ class SearchIndex:
             status,
             signature[0],
             signature[1],
+            sha256,
+            normalized_text_sha256,
             time.time(),
         )
         existing = self.connection.execute("SELECT id FROM documents WHERE path = ?", (resolved,)).fetchone()
@@ -111,15 +121,15 @@ class SearchIndex:
             document_id = existing[0]
             self.connection.execute(
                 """UPDATE documents SET name=?, subject=?, category=?, hierarchy=?, title=?, preview=?, status=?,
-                   size=?, mtime_ns=?, updated_at=? WHERE id=?""",
+                   size=?, mtime_ns=?, sha256=?, normalized_text_sha256=?, updated_at=? WHERE id=?""",
                 values[1:] + (document_id,),
             )
             if self._fts_enabled:
                 self.connection.execute("DELETE FROM documents_fts WHERE rowid = ?", (document_id,))
         else:
             cursor = self.connection.execute(
-                """INSERT INTO documents(path, name, subject, category, hierarchy, title, preview, status, size, mtime_ns, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO documents(path, name, subject, category, hierarchy, title, preview, status, size, mtime_ns, sha256, normalized_text_sha256, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 values,
             )
             document_id = cursor.lastrowid
@@ -133,7 +143,29 @@ class SearchIndex:
         return True
 
     def upsert_plan_item(self, item, status: str = "en attente", commit: bool = True) -> bool:
-        return self.upsert(item.source, item.classification, status, getattr(item, "hierarchy_label", ""), commit=commit)
+        return self.upsert(
+            item.source, item.classification, status, getattr(item, "hierarchy_label", ""),
+            commit=commit,
+            sha256=getattr(item, "sha256", ""),
+            normalized_text_sha256=getattr(item, "normalized_text_sha256", ""),
+        )
+
+    def find_duplicate(self, sha256: str = "", normalized_text_sha256: str = "", exclude_path: Path | None = None) -> tuple[Path, str] | None:
+        """Recherche un doublon par index, sans parcourir l’arborescence."""
+        excluded = str(exclude_path.resolve()) if exclude_path else ""
+        if sha256:
+            row = self.connection.execute(
+                "SELECT path FROM documents WHERE sha256 = ? AND path != ? LIMIT 1", (sha256, excluded)
+            ).fetchone()
+            if row:
+                return Path(row[0]), "octets identiques"
+        if normalized_text_sha256:
+            row = self.connection.execute(
+                "SELECT path FROM documents WHERE normalized_text_sha256 = ? AND path != ? LIMIT 1", (normalized_text_sha256, excluded)
+            ).fetchone()
+            if row:
+                return Path(row[0]), "texte normalisé identique"
+        return None
 
     def delete_path(self, path: Path):
         resolved = str(path.resolve())

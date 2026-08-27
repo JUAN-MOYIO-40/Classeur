@@ -22,6 +22,9 @@ class PlanEditService:
         if not cleaned or len(cleaned) > 120:
             raise ValueError("Le libellé doit contenir entre 1 et 120 caractères valides.")
         setattr(item.classification, field, cleaned)
+        if item.human_corrected_fields is None:
+            item.human_corrected_fields = set()
+        item.human_corrected_fields.add(field)
         item.classification.hierarchy = tuple(
             part for part in (
                 item.classification.year,

@@ -8,7 +8,7 @@ Classeur est organisé en couches simples. Chaque couche a une responsabilité p
 |---|---|---|
 | `domain/` | Modèles métier et construction des destinations | `classifier.py` pour les types de classification historiques |
 | `application/` | Cas d’usage : scanner, classifier, indexer, organiser et annuler | domaine, cache, index et infrastructure |
-| `infrastructure/` | Système de fichiers, SQLite, historique et watchdog | bibliothèques système et modèles métier |
+| `infrastructure/` | Système de fichiers, SQLite, historique, watchdog et OCR local | bibliothèques système et modèles métier |
 | `presentation/` | Fenêtres, dialogues, modèles Qt et workers adaptateurs | application, domaine et infrastructure via contrats |
 | `app.py` | Composition de l’application et orchestration de `MainWindow` | toutes les couches, uniquement pour les assembler |
 
@@ -36,10 +36,10 @@ Les workers Qt ne contiennent pas la logique de copie, de déplacement, de class
 
 ## Services principaux
 
-`ClassificationService` centralise l’usage du classificateur et du cache. `ScanService` parcourt un dossier, ignore les fichiers temporaires et construit des `PlanItem`. `FileOperationService` réalise les copies atomiques et les déplacements. `UndoService` restaure la dernière session après vérification de la taille et de la date de modification des cibles. `SearchIndexService` exécute la reconstruction transactionnelle de l’index.
+`ClassificationService` centralise l’usage du classificateur et du cache. `ScanService` parcourt un dossier sans trier ni matérialiser tous les chemins, puis produit des lots bornés de `PlanItem`. `AgentLedger` conserve localement l’état, les tentatives et la destination d’un fichier afin de reprendre après interruption et de ne pas retraiter un document inchangé déjà classé. `FilenameProposalService` propose un nom à partir du contenu effectivement extrait. `ContentIdentityService` calcule les empreintes binaires et textuelles. `LocalPDFOCR` rasterise les PDF scannés avec Poppler et Tesseract lorsqu’ils sont disponibles ; il reste optionnel et ne contacte aucun service distant. `FileOperationService` réalise les copies atomiques et les déplacements. `UndoService` restaure la dernière session après vérification de la taille et de la date de modification des cibles. `SearchIndexService` exécute la reconstruction transactionnelle de l’index.
 
 ## Ajouter une fonctionnalité
 
-Une nouvelle règle métier doit être ajoutée au domaine ou à un service applicatif. Un nouveau format de document doit être ajouté aux extracteurs du classificateur. Une nouvelle persistance doit être encapsulée dans l’infrastructure. Un nouveau bouton ou dialogue doit rester dans `presentation/` et appeler un service au lieu de manipuler directement les fichiers.
+Une nouvelle règle métier doit être ajoutée au domaine ou à un service applicatif. Un nouveau format de document doit être ajouté aux extracteurs du classificateur. Une nouvelle persistance ou un outil local comme l’OCR doit être encapsulé dans l’infrastructure. Un nouveau bouton ou dialogue doit rester dans `presentation/` et appeler un service au lieu de manipuler directement les fichiers.
 
 Avant toute modification, il faut ajouter un test indépendant de Qt lorsque cela est possible, puis un smoke test d’interface seulement si le comportement visible change. Cette discipline permet de garder une application locale, testable et évolutive sans transformer la fenêtre principale en nouveau point de concentration.

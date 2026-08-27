@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Iterable
 
 from .semantic import NativeSemanticEngine
+from .infrastructure.ocr import LocalPDFOCR
 from xml.etree import ElementTree
+
+
+_PDF_OCR = LocalPDFOCR()
 
 DEFAULT_SUBJECTS = {
     "Mathématiques": ["math", "maths", "mathematique", "algebre", "analyse", "probabilite", "statistique", "geometrie", "integrale", "derivation"],
@@ -99,13 +103,12 @@ def suggest_title(path: Path, content: str) -> str:
     return clean_filename(path.stem, "Document")
 
 
-def _read_pdf(path: Path, max_chars: int = 30000) -> str:
+def _read_pdf_with_status(path: Path, max_chars: int = 30000) -> tuple[str, str]:
     try:
         from pypdf import PdfReader
         reader = PdfReader(str(path))
         chunks: list[str] = []
         total = 0
-        # Parcourir jusqu’à la limite de texte plutôt que de couper arbitrairement aux 8 premières pages.
         for page in reader.pages:
             text = page.extract_text() or ""
             if not text:
@@ -115,9 +118,22 @@ def _read_pdf(path: Path, max_chars: int = 30000) -> str:
                 break
             chunks.append(text[:remaining])
             total += len(text)
-        return "\n".join(chunks)[:max_chars]
+        text = "\n".join(chunks)[:max_chars]
+        if text.strip():
+            return text, "contenu lu"
+        ocr_result = _PDF_OCR.extract(path, max_chars)
+        if ocr_result.text:
+            return ocr_result.text, ocr_result.status
+        return "", ocr_result.status
     except Exception:
-        return ""
+        ocr_result = _PDF_OCR.extract(path, max_chars)
+        if ocr_result.text:
+            return ocr_result.text, ocr_result.status
+        return "", "PDF illisible : OCR non concluant"
+
+
+def _read_pdf(path: Path, max_chars: int = 30000) -> str:
+    return _read_pdf_with_status(path, max_chars)[0]
 
 
 def _read_zip_xml_text(path: Path, prefixes: tuple[str, ...], max_chars: int = 30000) -> str:
@@ -157,24 +173,29 @@ def _read_odt(path: Path) -> str:
     return _read_zip_xml_text(path, ("content.xml", "meta.xml"))
 
 
-def read_content(path: Path, max_chars: int = 30000) -> str:
+def read_content_details(path: Path, max_chars: int = 30000) -> tuple[str, str]:
     extension = path.suffix.lower()
     if extension in TEXT_EXTENSIONS:
         try:
-            return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+            text = path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+            return text, "contenu lu" if text.strip() else "contenu vide"
         except OSError:
-            return ""
+            return "", "contenu absent ou illisible"
     if extension == ".pdf":
-        return _read_pdf(path, max_chars)
-    if extension == ".docx":
-        return _read_docx(path)[:max_chars]
-    if extension == ".xlsx":
-        return _read_xlsx(path)[:max_chars]
-    if extension == ".pptx":
-        return _read_pptx(path)[:max_chars]
-    if extension == ".odt":
-        return _read_odt(path)[:max_chars]
-    return ""
+        return _read_pdf_with_status(path, max_chars)
+    readers = {".docx": _read_docx, ".xlsx": _read_xlsx, ".pptx": _read_pptx, ".odt": _read_odt}
+    reader = readers.get(extension)
+    if reader is not None:
+        try:
+            text = reader(path)[:max_chars]
+            return text, "contenu lu" if text.strip() else "contenu absent ou illisible"
+        except OSError:
+            return "", "contenu absent ou illisible"
+    return "", "format non pris en charge"
+
+
+def read_content(path: Path, max_chars: int = 30000) -> str:
+    return read_content_details(path, max_chars)[0]
 
 
 @dataclass
@@ -258,7 +279,14 @@ class LocalClassifier:
 
     @staticmethod
     def _year_from(text: str) -> str:
-        normalized = fold(text)
+        # Les champs d’état civil et d’identité ne décrivent pas la période du document.
+        safe_lines = []
+        personal_markers = ("date de naissance", "lieu de naissance", "né le", "nee le", "date d expiration", "date d'expiration")
+        for line in text.splitlines():
+            if any(marker in fold(line) for marker in personal_markers):
+                continue
+            safe_lines.append(line)
+        normalized = fold("\n".join(safe_lines))
         match = re.search(r"(?<!\d)(20\d{2})\s*[-_/ ]\s*(20\d{2})(?!\d)", normalized)
         if match:
             return f"{match.group(1)}-{match.group(2)}"
@@ -281,10 +309,11 @@ class LocalClassifier:
     def _best_label(self, text: str, rules: dict[str, list[str]]) -> tuple[str, int, list[str]]:
         return self._score(text, rules)
 
-    def classify(self, path: Path) -> Classification:
+    def classify(self, path: Path, content: str | None = None, extraction_status: str | None = None) -> Classification:
         # Le chemin est inclus : un fichier présent dans un dossier « Economie » bénéficie de ce contexte.
         context = " ".join([path.stem, *path.parts[-4:]])
-        content = read_content(path)
+        if content is None or extraction_status is None:
+            content, extraction_status = read_content_details(path)
         context += " " + content
         subject, subject_score, subject_hits = self._score(context, self.subjects)
         category, category_score, category_hits = self._score(context, self.categories)
@@ -335,23 +364,15 @@ class LocalClassifier:
         if not reasons:
             reasons.append("aucun mot-clé reconnu")
         if content:
-            reasons.append(f"contenu lu : {path.suffix.lower() or 'fichier texte'}")
-        elif path.suffix.lower() not in KNOWN_CONTENT_EXTENSIONS:
-            reasons.append(f"format non pris en charge : {path.suffix.lower() or 'sans extension'}")
+            reasons.append(f"{extraction_status} : {path.suffix.lower() or 'fichier texte'}")
         else:
-            reasons.append("contenu absent ou illisible : analyse limitée au nom et au chemin")
+            reasons.append(extraction_status + " : analyse limitée au nom et au chemin")
         title = suggest_title(path, content)
         selected_topic = topic if topic_score >= 2 else ""
         hierarchy = tuple(part for part in (year, domain, subject, selected_topic, category) if part and part not in {"À trier", "Autre"})
         if needs_review:
             reasons.append("validation recommandée")
-        extension = path.suffix.lower()
-        if content:
-            content_status = "contenu lu"
-        elif extension not in KNOWN_CONTENT_EXTENSIONS:
-            content_status = "format non pris en charge"
-        else:
-            content_status = "contenu absent ou illisible"
+        content_status = extraction_status
         return Classification(subject, category, confidence, "; ".join(reasons), content[:500].replace("\n", " "), title, year, domain, selected_topic, hierarchy, tuple(alternatives), needs_review, content_status)
 
     def categories_for(self) -> Iterable[str]:

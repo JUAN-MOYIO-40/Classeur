@@ -25,6 +25,8 @@ from .domain.models import PlanItem
 from .domain.paths import FolderPairError, resolve_folder_pair
 from .domain.planning import build_destination
 from .application.services import ClassificationService, ScanService, UndoService
+from .application.agent import AgentLedger
+from .application.learning import LearningMemory
 from .application.indexing import SearchIndexService
 from .application.duplicates import DuplicateService
 from .application.plan import PlanEditService
@@ -66,10 +68,16 @@ class MainWindow(QMainWindow):
         self.cache = ClassificationCache(CACHE_FILE)
         self.search_index = SearchIndex(SEARCH_INDEX_FILE)
         self.classification_service = ClassificationService(self.classifier, self.cache)
-        self.scan_service = ScanService(self.classification_service)
+        self.agent_ledger = AgentLedger(CONFIG_DIR / "agent.sqlite3")
+        self.learning_memory = LearningMemory(CONFIG_DIR / "learning.sqlite3")
+        self.scan_service = ScanService(
+            self.classification_service,
+            ledger=self.agent_ledger,
+            learning=self.learning_memory,
+        )
         self.history_repository = HistoryRepository(LOG_FILE)
         self.undo_service = UndoService(self.history_repository)
-        self.file_operation_service = FileOperationService()
+        self.file_operation_service = FileOperationService(self.search_index.find_duplicate)
         self.duplicate_service = DuplicateService()
         self.plan_edit_service = PlanEditService()
         self.search_worker = None
@@ -402,24 +410,38 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
         self.statusBar().showMessage("Analyse du dossier et du contenu des fichiers en cours…")
+        self._scan_seen = 0
+        self._scan_added = 0
         self.scan_thread = ScanWorker(source, destination, self.classifier, self.cache, self.scan_service)
+        self.scan_thread.batch_ready.connect(self.on_scan_batch)
         self.scan_thread.completed.connect(self.on_scan_completed)
         self.scan_thread.failed.connect(self.on_worker_failed)
         self.scan_thread.start()
 
-    def on_scan_completed(self, items, count):
-        self.scan_button.setEnabled(True)
-        self.progress.setVisible(False)
+    def on_scan_batch(self, items):
+        """Intègre un lot dès qu’il est prêt, sans saturer la mémoire de l’interface."""
+        self._scan_seen += len(items)
         added = self.model.add_items(items)
+        self._scan_added += added
         for item in items:
             self.search_index.upsert_plan_item(item, "en attente")
         self.known_keys.update(item.key for item in items)
-        self.statusBar().showMessage(f"Analyse terminée : {count} fichier(s) détecté(s), {added} proposition(s) ajoutée(s).")
+        self.statusBar().showMessage(
+            f"Analyse en cours : {self._scan_seen} fichier(s) traité(s), {self._scan_added} proposition(s) ajoutée(s)."
+        )
         self.update_badge()
         if self.auto_checkbox.isChecked() and items:
             self.execute_items(items)
-        if added and self.tray.isVisible():
-            self.tray.showMessage(APP_NAME, f"{added} fichier(s) prêt(s) à être classé(s).", QSystemTrayIcon.Information, 5000)
+
+    def on_scan_completed(self, items, count):
+        self.scan_button.setEnabled(True)
+        self.progress.setVisible(False)
+        self.statusBar().showMessage(
+            f"Analyse terminée : {count} fichier(s) détecté(s), {self._scan_added} proposition(s) ajoutée(s)."
+        )
+        self.update_badge()
+        if self._scan_added and self.tray.isVisible():
+            self.tray.showMessage(APP_NAME, f"{self._scan_added} fichier(s) prêt(s) à être classé(s).", QSystemTrayIcon.Information, 5000)
 
     def _start_watch_observer(self, source: Path):
         if Observer is None:
@@ -624,7 +646,7 @@ class MainWindow(QMainWindow):
         content_status = item.classification.content_status or "état d’extraction non disponible (ancienne classification)"
         proposed = item.suggested_name or item.destination_file.stem or item.source.stem
         identity = item.sha256[:16] + "…" if item.sha256 else "indisponible"
-        self.explain.setPlainText(f"Pourquoi cette proposition ?\n{item.classification.reason}\n\nNom original : {item.source.name}\nNom proposé : {proposed}{item.source.suffix}\nConfiance du nom : {item.rename_confidence} %\nJustification du nom : {item.rename_reason or 'nom d’origine conservé'}\n\nQualité de lecture : {content_status}\nIdentité SHA-256 : {identity}\n\nAperçu local du contenu :\n{preview}\n\nDestination :\n{item.destination_file}\n\nArborescence : {item.destination_reason or 'création ou réutilisation déterminée pendant l’analyse.'}")
+        self.explain.setPlainText(f"Décision de l’agent\n{item.agent_action}\n{item.agent_reason or 'Décision fondée sur les signaux disponibles.'}\n\nPourquoi cette proposition ?\n{item.classification.reason}\n\nNom original : {item.source.name}\nNom proposé : {proposed}{item.source.suffix}\nConfiance du nom : {item.rename_confidence} %\nJustification du nom : {item.rename_reason or 'nom d’origine conservé'}\n\nQualité de lecture : {content_status}\nIdentité SHA-256 : {identity}\n\nAperçu local du contenu :\n{preview}\n\nDestination :\n{item.destination_file}\n\nArborescence : {item.destination_reason or 'création ou réutilisation déterminée pendant l’analyse.'}")
 
     def set_auto_mode(self, state):
         self.auto_mode = state == Qt.Checked
@@ -649,6 +671,18 @@ class MainWindow(QMainWindow):
         if self.apply_thread and self.apply_thread.isRunning():
             return
         mode = self.mode_combo.currentData() or "copy"
+        for item in items:
+            if item.human_corrected_fields:
+                self.learning_memory.record(
+                    path=item.source,
+                    fingerprint=item.sha256,
+                    text_signature=item.normalized_text_sha256,
+                    subject=item.classification.subject,
+                    category=item.classification.category,
+                    hierarchy=item.hierarchy_label,
+                    suggested_name=item.suggested_name,
+                    context=item.classification.extracted_preview,
+                )
         self.approve_button.setEnabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, 100)
@@ -770,6 +804,8 @@ class MainWindow(QMainWindow):
                 worker.wait(1500)
         self._save_config()
         self.search_index.close()
+        self.agent_ledger.close()
+        self.learning_memory.close()
         event.accept()
 
 

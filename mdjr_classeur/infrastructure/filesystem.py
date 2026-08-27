@@ -96,6 +96,9 @@ def atomic_write_text(path: Path, text: str) -> None:
 class FileOperationService:
     """Effectue les opérations de fichiers sans connaître la fenêtre Qt."""
 
+    def __init__(self, duplicate_lookup=None):
+        self.duplicate_lookup = duplicate_lookup
+
     def execute(self, items: list[PlanItem], mode: str, progress=None) -> list[dict]:
         results: list[dict] = []
         batch_id = str(time.time_ns())
@@ -105,7 +108,12 @@ class FileOperationService:
             try:
                 before = source.stat()
                 search_root = item.destination_root or item.destination_dir
-                duplicate_match = find_content_match(source, search_root, item.sha256 or None, item.normalized_text_sha256 or None)
+                if self.duplicate_lookup is not None:
+                    duplicate_match = self.duplicate_lookup(
+                        item.sha256 or "", item.normalized_text_sha256 or "", source
+                    )
+                else:
+                    duplicate_match = find_content_match(source, search_root, item.sha256 or None, item.normalized_text_sha256 or None)
                 if duplicate_match is not None:
                     duplicate, duplicate_kind = duplicate_match
                     item.status = "Doublon exact : conservé"

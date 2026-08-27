@@ -12,7 +12,8 @@ Classeur peut :
 
 - analyser les fichiers déjà présents dans un dossier
 - surveiller les nouveaux fichiers pendant que l'application est ouverte
-- lire les noms, les chemins, les fichiers texte, les PDF qui contiennent du texte, les DOCX, les XLSX, les PPTX et certains ODT
+- lire les noms, les chemins, les fichiers texte, les PDF textuels, les DOCX, les XLSX, les PPTX et certains ODT
+- lire localement les PDF scannés lorsque Tesseract et Poppler sont installés
 - reconnaître une année ou une période quand le signal est fiable
 - proposer un domaine, une matière, un thème et une nature de document
 - réutiliser les dossiers qui existent déjà
@@ -107,11 +108,19 @@ Un exemple de résultat peut être :
 
 Il est préférable de commencer avec des mots clés précis. Les mots très courts peuvent provoquer des résultats inattendus. Après une modification du fichier, relance l'analyse afin que le cache soit recalculé.
 
+## Mode agent et grands volumes
+
+Classeur traite les analyses par lots bornés au lieu de construire toute la liste des fichiers en mémoire. Le registre local de l’agent mémorise la taille, la date de modification, l’état et les tentatives de chaque fichier. Après une fermeture ou une interruption, les tâches en cours sont remises en attente ; les fichiers inchangés déjà terminés ne sont pas relus inutilement.
+
+Cette architecture rend le traitement beaucoup plus adapté aux grands dossiers et aux SSD. Elle ne signifie pas qu’un million de documents sera analysé instantanément : l’extraction, l’OCR, les empreintes et les documents volumineux restent limités par le matériel. Le traitement initial doit être lancé comme une opération longue, avec progression et possibilité de reprise. La recherche, elle, reste paginée et ne charge qu’un nombre limité de résultats.
+
+Le mode local reste le comportement par défaut. La politique `OnlineAssistPolicy` prépare uniquement une assistance distante facultative en mode extrait : elle exige un consentement explicite, limite la taille du document, nettoie et tronque l’extrait, et ne transmet jamais les octets du fichier. L’adaptateur réseau devra être ajouté séparément et rester désactivé tant que l’utilisateur ne l’a pas autorisé.
+
 ## Nommage intelligent et doublons
 
 Pendant l’analyse, Classeur lit le contenu réellement disponible, détecte un titre possible et affiche séparément le nom original et le nom proposé. Le nom proposé combine prudemment les informations reconnues, par exemple la période, la matière, le thème, la nature et un titre lisible. Lorsque le contenu est absent, illisible ou dans un format non pris en charge, Classeur ne prétend pas comprendre le document et conserve le nom d’origine ou produit une proposition de faible confiance.
 
-Avant une copie ou un déplacement, Classeur calcule une empreinte SHA-256. Il compare aussi, lorsque le document textuel est entièrement lisible, une signature du texte normalisé. Deux fichiers dont les noms sont différents mais dont le contenu est identique ou textuellement équivalent ne sont donc pas recopiés dans la destination. La décision apparaît dans la file sous le statut de doublon exact conservé. Les collisions de noms non identiques reçoivent un suffixe contrôlé comme `(1)` au lieu d’écraser un fichier existant.
+Avant une copie ou un déplacement, Classeur calcule une empreinte SHA-256. Il compare aussi, lorsque le document textuel est entièrement lisible, une signature du texte normalisé. Ces empreintes sont conservées dans l’index SQLite : lorsqu’un document a déjà été indexé, la recherche d’un doublon se fait par requête indexée au lieu de reparcourir toute l’arborescence. Deux fichiers dont les noms sont différents mais dont le contenu est identique ou textuellement équivalent ne sont donc pas recopiés dans la destination. La décision apparaît dans la file sous le statut de doublon exact conservé. Les collisions de noms non identiques reçoivent un suffixe contrôlé comme `(1)` au lieu d’écraser un fichier existant.
 
 Le mode recommandé reste la copie de l’original. Le déplacement peut renommer directement le fichier déplacé, mais il doit être vérifié par l’utilisateur avant validation. Aucune suppression n’est déclenchée par le nommage ou par la détection de doublons.
 
@@ -149,7 +158,9 @@ Les documents suivants complètent ce README :
 |---|---|
 | [Guide utilisateur](docs/GUIDE_UTILISATEUR.md) | Installation, premier classement, nommage, doublons, surveillance et annulation |
 | [Dépannage](docs/DEPANNAGE.md) | Diagnostic des problèmes courants et comportements de protection |
+| [OCR local](docs/OCR_LOCAL.md) | Installation de Tesseract et Poppler pour les PDF scannés |
 | [Architecture](ARCHITECTURE.md) | Découpage des couches et règles de dépendance |
+| [Agent IA](docs/AGENT_IA.md) | Boucle agentique, apprentissage, dialogue et confidentialité |
 | [Contribution](CONTRIBUTING.md) | Normes de code, tests, sécurité et revue |
 | [Hiérarchie](HIERARCHIE.md) | Principes de construction des destinations |
 | [Utilisation de GitHub](docs/UTILISATION_GITHUB.md) | Clonage, règles, commits et publication |
@@ -249,7 +260,9 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=. python tests/smoke_gui.py
 |---|---|
 | `main.py` | Point d'entrée |
 | `mdjr_classeur/app.py` | Composition de l’application et orchestration de l’interface |
-| `mdjr_classeur/application/services.py` | Classification, scan et annulation |
+| `mdjr_classeur/application/services.py` | Classification, scan par lots et annulation |
+| `mdjr_classeur/application/agent.py` | Registre persistant de progression et reprise des tâches |
+| `mdjr_classeur/application/online_policy.py` | Politique de confidentialité pour l’assistance en ligne facultative |
 | `mdjr_classeur/application/naming.py` | Proposition de noms fondés sur le contenu lisible |
 | `mdjr_classeur/application/document_identity.py` | Empreintes binaires et signatures textuelles |
 | `mdjr_classeur/application/duplicates.py` | Service applicatif de détection et traitement des doublons |
@@ -269,15 +282,16 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=. python tests/smoke_gui.py
 | `CONTRIBUTING.md` | Normes de contribution et de tests |
 | `docs/GUIDE_UTILISATEUR.md` | Guide d’utilisation complet |
 | `docs/DEPANNAGE.md` | Résolution des problèmes courants |
+| `docs/OCR_LOCAL.md` | Installation et limites de l’OCR local |
 | `build_windows.bat` | Construction de l'exécutable Windows |
 | `requirements.txt` | Dépendances |
 | `tests/` | Tests automatisés |
 
 ## Limites connues
 
-Les PDF scannés comme des images, les photos et certains formats fermés ne peuvent pas toujours être lus. Dans ce cas, Classeur affiche que l’analyse est limitée au nom et au chemin. Les documents très complexes, les tableaux et certains éléments non textuels peuvent encore être partiellement extraits. Une version avec OCR local pourrait améliorer ce point.
+Les PDF textuels sont lus directement. Les PDF scannés comme des images peuvent être lus par OCR local si Tesseract, son pack de langue et Poppler sont installés. Sans ces outils, Classeur affiche que l’analyse est limitée au nom et au chemin. Les documents très complexes, les tableaux, les scans flous et certains éléments non textuels peuvent encore être partiellement extraits. Voir [OCR local](docs/OCR_LOCAL.md).
 
-Chaque proposition indique maintenant si le contenu a été lu, s’il est absent ou illisible, ou si l’extension n’est pas prise en charge. Une confiance affichée reste un score heuristique, pas une garantie mathématique. Les documents importants doivent donc être vérifiés et sauvegardés.
+Chaque proposition indique maintenant si le contenu a été lu, s’il est absent ou illisible, ou si l’extension n’est pas prise en charge. Le générateur de noms rejette les champs d’identité, les dates de naissance, les numéros administratifs et les dates isolées comme titres ou périodes documentaires. Une confiance affichée reste un score heuristique, pas une garantie mathématique. Les documents importants doivent donc être vérifiés et sauvegardés.
 
 Les dossiers source et destination doivent être séparés. Les fichiers temporaires de logiciels et de synchronisation courants sont ignorés pendant la surveillance. L’annulation peut restaurer toute la dernière session quand les fichiers n’ont pas été modifiés depuis le classement ; les fichiers changés sont volontairement laissés en place.
 
