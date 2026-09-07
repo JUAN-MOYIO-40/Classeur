@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .semantic import NativeSemanticEngine
-from .infrastructure.ocr import LocalPDFOCR
+from .infrastructure.ocr import IMAGE_EXTENSIONS, LocalPDFOCR
 from xml.etree import ElementTree
 
 
@@ -68,7 +68,7 @@ DEFAULT_CATEGORIES = {
 
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".py", ".js", ".ts", ".html", ".css", ".xml", ".yml", ".yaml", ".ini", ".log"}
 ARCHIVE_TEXT_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".odt"}
-KNOWN_CONTENT_EXTENSIONS = TEXT_EXTENSIONS | ARCHIVE_TEXT_EXTENSIONS | {".pdf"}
+KNOWN_CONTENT_EXTENSIONS = TEXT_EXTENSIONS | ARCHIVE_TEXT_EXTENSIONS | {".pdf"} | IMAGE_EXTENSIONS
 
 
 def fold(text: str) -> str:
@@ -103,6 +103,13 @@ def suggest_title(path: Path, content: str) -> str:
     return clean_filename(path.stem, "Document")
 
 
+def _text_quality_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    alpha_count = sum(1 for c in text if c.isalpha())
+    return alpha_count / len(text) if text else 0.0
+
+
 def _read_pdf_with_status(path: Path, max_chars: int = 30000) -> tuple[str, str]:
     try:
         from pypdf import PdfReader
@@ -119,11 +126,13 @@ def _read_pdf_with_status(path: Path, max_chars: int = 30000) -> tuple[str, str]
             chunks.append(text[:remaining])
             total += len(text)
         text = "\n".join(chunks)[:max_chars]
-        if text.strip():
+        if text.strip() and _text_quality_ratio(text) >= 0.15:
             return text, "contenu lu"
         ocr_result = _PDF_OCR.extract(path, max_chars)
         if ocr_result.text:
             return ocr_result.text, ocr_result.status
+        if text.strip():
+            return text, "contenu partiellement lisible"
         return "", ocr_result.status
     except Exception:
         ocr_result = _PDF_OCR.extract(path, max_chars)
@@ -183,6 +192,11 @@ def read_content_details(path: Path, max_chars: int = 30000) -> tuple[str, str]:
             return "", "contenu absent ou illisible"
     if extension == ".pdf":
         return _read_pdf_with_status(path, max_chars)
+    if extension in IMAGE_EXTENSIONS:
+        ocr_result = _PDF_OCR.extract_image(path, max_chars)
+        if ocr_result.text:
+            return ocr_result.text, ocr_result.status
+        return "", ocr_result.status or "image sans texte détectable"
     readers = {".docx": _read_docx, ".xlsx": _read_xlsx, ".pptx": _read_pptx, ".odt": _read_odt}
     reader = readers.get(extension)
     if reader is not None:

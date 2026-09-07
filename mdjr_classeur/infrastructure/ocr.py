@@ -16,8 +16,11 @@ class OCRResult:
     error: str = ""
 
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
+
+
 class LocalPDFOCR:
-    """OCR PDF local via Poppler et Tesseract, sans réseau et avec limites strictes."""
+    """OCR PDF et images local via Poppler et Tesseract, sans réseau et avec limites strictes."""
 
     def __init__(self, max_pages: int = 12, dpi: int = 180, timeout_seconds: int = 90, languages: str = "fra+eng"):
         self.max_pages = max_pages
@@ -28,6 +31,10 @@ class LocalPDFOCR:
     @property
     def available(self) -> bool:
         return bool(shutil.which("tesseract") and shutil.which("pdftoppm"))
+
+    @property
+    def tesseract_available(self) -> bool:
+        return bool(shutil.which("tesseract"))
 
     def extract(self, path: Path, max_chars: int = 30_000) -> OCRResult:
         if not self.available:
@@ -83,3 +90,25 @@ class LocalPDFOCR:
             return OCRResult(text, "contenu lu par OCR local", pages)
         except (OSError, subprocess.SubprocessError) as exc:
             return OCRResult("", "OCR impossible : document conservé sans texte", pages, str(exc))
+
+    def extract_image(self, path: Path, max_chars: int = 30_000) -> OCRResult:
+        if not self.tesseract_available:
+            return OCRResult("", "OCR indisponible : installer Tesseract", error="tesseract absent")
+        try:
+            result = subprocess.run(
+                ["tesseract", str(path), "stdout", "-l", self.languages, "--psm", "3"],
+                check=False, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=self.timeout_seconds,
+            )
+            if result.returncode != 0 and self.languages != "eng":
+                result = subprocess.run(
+                    ["tesseract", str(path), "stdout", "-l", "eng", "--psm", "3"],
+                    check=False, capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=self.timeout_seconds,
+                )
+            text = (result.stdout or "").strip()[:max_chars]
+            if text:
+                return OCRResult(text, "contenu lu par OCR image", 1)
+            return OCRResult("", "OCR image : aucun texte détecté", 1, "résultat vide")
+        except (OSError, subprocess.SubprocessError) as exc:
+            return OCRResult("", "OCR image impossible", 0, str(exc))
