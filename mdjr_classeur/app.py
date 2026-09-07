@@ -298,6 +298,7 @@ class MainWindow(QMainWindow):
         self.documents_page.undo_requested.connect(self.undo_last)
         self.documents_page.history_requested.connect(self.open_history)
         self.documents_page.hierarchy_requested.connect(self.open_hierarchy_preview)
+        self.documents_page._approve_high_confidence_cb = self.apply_high_confidence
         self.table.selectionModel().selectionChanged.connect(self.show_explanation)
         self.stack.addWidget(self.documents_page)
 
@@ -654,26 +655,10 @@ class MainWindow(QMainWindow):
     def show_explanation(self, selected, deselected):
         rows = selected.indexes()
         if not rows:
+            self.documents_page.show_item_detail(None)
             return
         item = self.model.items[rows[0].row()]
-        preview = item.classification.extracted_preview or tr("Aucun extrait disponible.")
-        content_status = item.classification.content_status or ""
-        proposed = item.suggested_name or item.destination_file.stem or item.source.stem
-        identity = item.sha256[:16] + "…" if item.sha256 else "—"
-        text = (
-            f"Décision de l'agent\n{item.agent_action}\n{item.agent_reason or 'Décision fondée sur les signaux disponibles.'}\n\n"
-            f"Pourquoi cette proposition ?\n{item.classification.reason}\n\n"
-            f"Nom original : {item.source.name}\n"
-            f"Nom proposé : {proposed}{item.source.suffix}\n"
-            f"Confiance du nom : {item.rename_confidence} %\n"
-            f"Justification : {item.rename_reason or 'nom conservé'}\n\n"
-            f"Qualité de lecture : {content_status}\n"
-            f"SHA-256 : {identity}\n\n"
-            f"Aperçu :\n{preview}\n\n"
-            f"Destination : {item.destination_file}\n"
-            f"Arborescence : {item.destination_reason or ''}"
-        )
-        self.documents_page.explain.setPlainText(text)
+        self.documents_page.show_item_detail(item)
 
     def open_hierarchy_preview(self):
         if not self.model.items:
@@ -700,6 +685,16 @@ class MainWindow(QMainWindow):
         if bool(self.preferences.get("confirm_actions", True)):
             if QMessageBox.question(self, tr("Classer"), message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
+        self.execute_items(items)
+
+    def apply_high_confidence(self):
+        items = [item for item in self.model.items if item.confidence >= 80]
+        if not items:
+            QMessageBox.information(self, tr("Aucun élément"), tr("Aucun fichier avec une confiance ≥80 %."))
+            return
+        message = f"Classer automatiquement {len(items)} fichier(s) avec confiance ≥80 % ?"
+        if QMessageBox.question(self, tr("Classement automatique"), message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
         self.execute_items(items)
 
     def execute_items(self, items):

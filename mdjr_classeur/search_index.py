@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .classifier import Classification, fold
+from .semantic import NativeSemanticEngine
 
 
 @dataclass
@@ -23,8 +24,22 @@ class SearchRecord:
     mtime_ns: int
 
 
+@dataclass
+class VersionGroup:
+    name_stem: str
+    versions: list[SearchRecord]
+
+    @property
+    def count(self) -> int:
+        return len(self.versions)
+
+    @property
+    def latest(self) -> SearchRecord:
+        return max(self.versions, key=lambda r: r.mtime_ns)
+
+
 class SearchIndex:
-    """Index de recherche local, rapide et indépendant de toute connexion Internet."""
+    """Index de recherche local avec FTS5 + fallback sémantique n-gram, sans réseau."""
 
     def __init__(self, database_path: Path):
         self.database_path = database_path
@@ -34,6 +49,7 @@ class SearchIndex:
         self.connection.execute("PRAGMA synchronous=NORMAL")
         self.connection.execute("PRAGMA busy_timeout=5000")
         self._fts_enabled = False
+        self._semantic = NativeSemanticEngine()
         self._initialize()
 
     def _initialize(self):
@@ -151,7 +167,6 @@ class SearchIndex:
         )
 
     def find_duplicate(self, sha256: str = "", normalized_text_sha256: str = "", exclude_path: Path | None = None) -> tuple[Path, str] | None:
-        """Recherche un doublon par index, sans parcourir l’arborescence."""
         excluded = str(exclude_path.resolve()) if exclude_path else ""
         if sha256:
             row = self.connection.execute(
@@ -166,6 +181,22 @@ class SearchIndex:
             if row:
                 return Path(row[0]), "texte normalisé identique"
         return None
+
+    def find_near_duplicates(self, sha256: str = "", normalized_text_sha256: str = "", exclude_path: Path | None = None) -> list[tuple[Path, str]]:
+        excluded = str(exclude_path.resolve()) if exclude_path else ""
+        results: list[tuple[Path, str]] = []
+        if sha256:
+            rows = self.connection.execute(
+                "SELECT path FROM documents WHERE sha256 = ? AND path != ?", (sha256, excluded)
+            ).fetchall()
+            results.extend((Path(row[0]), "octets identiques") for row in rows)
+        if normalized_text_sha256:
+            rows = self.connection.execute(
+                "SELECT path FROM documents WHERE normalized_text_sha256 = ? AND path != ?", (normalized_text_sha256, excluded)
+            ).fetchall()
+            existing = {str(r[0]) for r in results}
+            results.extend((Path(row[0]), "texte normalisé identique") for row in rows if row[0] not in existing)
+        return results
 
     def delete_path(self, path: Path):
         resolved = str(path.resolve())
@@ -207,7 +238,6 @@ class SearchIndex:
         else:
             fields = "(LOWER(path) LIKE ? OR LOWER(name) LIKE ? OR LOWER(subject) LIKE ? OR LOWER(category) LIKE ? OR LOWER(hierarchy) LIKE ? OR LOWER(title) LIKE ? OR LOWER(preview) LIKE ?)"
             if tokens:
-                # Le fallback LIKE conserve la sémantique AND de FTS5 pour les requêtes à plusieurs termes.
                 token_fields = " AND ".join(fields for _token in tokens)
                 sql = (
                     "SELECT path, name, subject, category, hierarchy, title, preview, status, size, mtime_ns FROM documents WHERE "
@@ -221,6 +251,104 @@ class SearchIndex:
         params.append(limit)
         rows = self.connection.execute(sql, params).fetchall()
         return [SearchRecord(*row) for row in rows]
+
+    def semantic_search(self, query: str, status: str = "Tous", limit: int = 50) -> list[tuple[SearchRecord, float]]:
+        """Recherche sémantique locale : n-gram cosine sur les documents indexés."""
+        all_rows = self.connection.execute(
+            "SELECT path, name, subject, category, hierarchy, title, preview, status, size, mtime_ns FROM documents"
+            + (" WHERE status = ?" if status != "Tous" else ""),
+            (status,) if status != "Tous" else (),
+        ).fetchall()
+        if not all_rows or not query.strip():
+            return []
+        query_features = self._semantic._features(query)
+        scored: list[tuple[float, SearchRecord]] = []
+        for row in all_rows:
+            record = SearchRecord(*row)
+            doc_text = f"{record.name} {record.subject} {record.category} {record.hierarchy} {record.title} {record.preview}"
+            doc_features = self._semantic._features(doc_text)
+            score = self._semantic._cosine(query_features, doc_features)
+            if score > 0.05:
+                scored.append((score, record))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [(record, score) for score, record in scored[:limit]]
+
+    def hybrid_search(self, query: str, status: str = "Tous", limit: int = 100) -> list[SearchRecord]:
+        """FTS5 d'abord, puis complète avec la recherche sémantique si trop peu de résultats."""
+        fts_results = self.search(query, status, limit)
+        if len(fts_results) >= min(10, limit):
+            return fts_results[:limit]
+        semantic_results = self.semantic_search(query, status, limit=limit)
+        seen = {r.path for r in fts_results}
+        combined = list(fts_results)
+        for record, _score in semantic_results:
+            if record.path not in seen:
+                combined.append(record)
+                seen.add(record.path)
+            if len(combined) >= limit:
+                break
+        return combined
+
+    def find_versions(self, name_stem: str, limit: int = 50) -> list[SearchRecord]:
+        """Trouve les versions d'un même document par nom normalisé similaire."""
+        folded = fold(name_stem)
+        if not folded:
+            return []
+        rows = self.connection.execute(
+            "SELECT path, name, subject, category, hierarchy, title, preview, status, size, mtime_ns FROM documents ORDER BY updated_at DESC"
+        ).fetchall()
+        results = []
+        for row in rows:
+            record_name_folded = fold(Path(row[0]).stem)
+            if not record_name_folded:
+                continue
+            tokens_query = set(folded.split())
+            tokens_doc = set(record_name_folded.split())
+            if not tokens_query:
+                continue
+            overlap = len(tokens_query & tokens_doc) / max(len(tokens_query), len(tokens_doc))
+            if overlap >= 0.6:
+                results.append(SearchRecord(*row))
+            if len(results) >= limit:
+                break
+        return results
+
+    def detect_version_groups(self, limit: int = 100) -> list[VersionGroup]:
+        """Détecte les groupes de fichiers qui sont des versions du même document."""
+        rows = self.connection.execute(
+            "SELECT path, name, subject, category, hierarchy, title, preview, status, size, mtime_ns FROM documents ORDER BY name"
+        ).fetchall()
+        by_stem: dict[str, list[SearchRecord]] = {}
+        for row in rows:
+            record = SearchRecord(*row)
+            stem = fold(Path(record.path).stem)
+            stem_clean = re.sub(r"\s*\(\d+\)\s*$", "", stem).strip()
+            stem_clean = re.sub(r"\s*v\d+\s*$", "", stem_clean).strip()
+            stem_clean = re.sub(r"\s*-\s*copie\s*$", "", stem_clean).strip()
+            stem_clean = re.sub(r"\s*copy\s*$", "", stem_clean).strip()
+            if stem_clean:
+                by_stem.setdefault(stem_clean, []).append(record)
+        groups = []
+        for stem, records in by_stem.items():
+            if len(records) >= 2:
+                records.sort(key=lambda r: r.mtime_ns, reverse=True)
+                groups.append(VersionGroup(stem, records))
+        groups.sort(key=lambda g: g.count, reverse=True)
+        return groups[:limit]
+
+    def stats(self) -> dict[str, int]:
+        total = self.connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        classified = self.connection.execute("SELECT COUNT(*) FROM documents WHERE status = 'classé'").fetchone()[0]
+        pending = self.connection.execute("SELECT COUNT(*) FROM documents WHERE status = 'en attente'").fetchone()[0]
+        unique_subjects = self.connection.execute("SELECT COUNT(DISTINCT subject) FROM documents").fetchone()[0]
+        unique_categories = self.connection.execute("SELECT COUNT(DISTINCT category) FROM documents").fetchone()[0]
+        return {
+            "total": total,
+            "classified": classified,
+            "pending": pending,
+            "subjects": unique_subjects,
+            "categories": unique_categories,
+        }
 
     def close(self):
         self.connection.close()

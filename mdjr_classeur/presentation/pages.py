@@ -381,8 +381,76 @@ class ImportPage(QWidget):
 # Documents Page
 # ---------------------------------------------------------------------------
 
+class ReviewPanel(QFrame):
+    """Panneau de détail pour un fichier sélectionné dans le Review Center."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("statusPanel")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(8)
+
+        title = QLabel(tr("Détail du fichier"))
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+
+        self.agent_label = QLabel()
+        self.agent_label.setWordWrap(True)
+        layout.addWidget(self.agent_label)
+
+        self.classification_label = QLabel()
+        self.classification_label.setWordWrap(True)
+        layout.addWidget(self.classification_label)
+
+        self.naming_label = QLabel()
+        self.naming_label.setWordWrap(True)
+        layout.addWidget(self.naming_label)
+
+        self.destination_label = QLabel()
+        self.destination_label.setWordWrap(True)
+        layout.addWidget(self.destination_label)
+
+        self.preview_text = QTextEdit()
+        self.preview_text.setReadOnly(True)
+        self.preview_text.setPlaceholderText(tr("Sélectionnez un fichier pour voir le détail."))
+        self.preview_text.setMaximumHeight(120)
+        layout.addWidget(self.preview_text)
+
+    def show_item(self, item):
+        if item is None:
+            self.agent_label.setText("")
+            self.classification_label.setText("")
+            self.naming_label.setText("")
+            self.destination_label.setText("")
+            self.preview_text.setPlainText("")
+            return
+        action_labels = {
+            "auto_classify": "Classement automatique",
+            "propose_for_review": "Proposition (à valider)",
+            "hold_for_review": "En attente de validation",
+        }
+        action_text = action_labels.get(item.agent_action, item.agent_action)
+        self.agent_label.setText(f"Agent : {action_text}\n{item.agent_reason or ''}")
+        self.classification_label.setText(
+            f"Matière : {item.classification.subject}  |  Catégorie : {item.classification.category}  |  "
+            f"Confiance : {item.confidence} %\n{item.classification.reason}"
+        )
+        proposed = item.suggested_name or item.destination_file.stem or item.source.stem
+        self.naming_label.setText(
+            f"Nom original : {item.source.name}\n"
+            f"Nom proposé : {proposed}{item.source.suffix}  ({item.rename_confidence} %)\n"
+            f"{item.rename_reason or 'nom conservé'}"
+        )
+        self.destination_label.setText(f"Destination : {item.destination_file}\n{item.destination_reason or ''}")
+        preview = item.classification.extracted_preview or tr("Aucun extrait disponible.")
+        quality = item.classification.content_status or ""
+        identity = item.sha256[:16] + "…" if item.sha256 else "—"
+        self.preview_text.setPlainText(f"Qualité : {quality}  |  SHA-256 : {identity}\n\n{preview}")
+
+
 class DocumentsPage(QWidget):
-    """Main document review and management view."""
+    """Review Center — centre de validation des propositions de classement."""
     approve_requested = Signal()
     clear_requested = Signal()
     undo_requested = Signal()
@@ -393,10 +461,10 @@ class DocumentsPage(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 28, 32, 20)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
 
         header_row = QHBoxLayout()
-        header = QLabel(tr("Documents"))
+        header = QLabel(tr("Review Center"))
         header.setObjectName("pageTitle")
         header_row.addWidget(header)
         header_row.addStretch()
@@ -406,13 +474,34 @@ class DocumentsPage(QWidget):
         header_row.addWidget(self.pending_badge)
         layout.addLayout(header_row)
 
-        # Action bar
-        actions = QHBoxLayout()
-        actions.setSpacing(8)
+        subtitle = QLabel(tr("Validez, corrigez ou rejetez les propositions de classement"))
+        subtitle.setObjectName("pageSubtitle")
+        layout.addWidget(subtitle)
+
+        # Filter bar
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
+
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems([tr("Tous"), tr("Haute confiance (≥80%)"), tr("Moyenne (50-79%)"), tr("Faible (<50%)")])
+        self.filter_combo.setFixedWidth(200)
+        filter_row.addWidget(QLabel(tr("Filtre :")))
+        filter_row.addWidget(self.filter_combo)
+        filter_row.addStretch()
 
         self.approve_btn = QPushButton(tr("Classer la sélection"))
         self.approve_btn.clicked.connect(self.approve_requested)
-        actions.addWidget(self.approve_btn)
+        filter_row.addWidget(self.approve_btn)
+
+        self.approve_all_btn = QPushButton(tr("Classer tout (≥80%)"))
+        self.approve_all_btn.setObjectName("secondary")
+        self.approve_all_btn.clicked.connect(self._approve_high_confidence)
+        filter_row.addWidget(self.approve_all_btn)
+        layout.addLayout(filter_row)
+
+        # Action bar
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
 
         undo_btn = QPushButton(tr("Annuler"))
         undo_btn.setObjectName("secondary")
@@ -437,16 +526,20 @@ class DocumentsPage(QWidget):
         actions.addWidget(clear_btn)
         layout.addLayout(actions)
 
-        # Table + Preview splitter
+        # Table + Review panel
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(table_view)
 
-        self.explain = QTextEdit()
-        self.explain.setReadOnly(True)
-        self.explain.setPlaceholderText(tr("Sélectionnez un fichier pour voir la logique de classement et un aperçu du contenu."))
-        splitter.addWidget(self.explain)
-        splitter.setSizes([500, 180])
+        self.review_panel = ReviewPanel()
+        splitter.addWidget(self.review_panel)
+        splitter.setSizes([450, 220])
         layout.addWidget(splitter, 1)
+
+        self._approve_high_confidence_cb = None
+
+    @property
+    def explain(self):
+        return self.review_panel.preview_text
 
     def set_pending_count(self, count: int):
         if count > 0:
@@ -454,6 +547,13 @@ class DocumentsPage(QWidget):
             self.pending_badge.setVisible(True)
         else:
             self.pending_badge.setVisible(False)
+
+    def show_item_detail(self, item):
+        self.review_panel.show_item(item)
+
+    def _approve_high_confidence(self):
+        if self._approve_high_confidence_cb:
+            self._approve_high_confidence_cb()
 
 
 # ---------------------------------------------------------------------------
@@ -529,7 +629,7 @@ class SearchPage(QWidget):
         query = self.search_input.text().strip()
         status_map = {"Tous": "Tous", "classé": "classé", "en attente": "en attente"}
         status = status_map.get(self.status_combo.currentText(), "Tous")
-        results = self.search_index.search(query, status, limit=500)
+        results = self.search_index.hybrid_search(query, status, limit=500)
         self._results = results
         self._populate(results)
 
