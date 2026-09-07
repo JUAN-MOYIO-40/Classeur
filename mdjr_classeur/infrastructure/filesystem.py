@@ -137,7 +137,7 @@ class FileOperationService:
                     shutil.move(str(source), str(target))
                     operation = "move"
                 else:
-                    partial = target.with_name(f".{target.name}.classeur-partial-{time.time_ns()}")
+                    partial = target.with_name(f".classeur-partial-{os.getpid()}-{time.time_ns()}{target.suffix}")
                     try:
                         shutil.copy2(str(source), str(partial))
                         os.replace(partial, target)

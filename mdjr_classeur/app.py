@@ -333,7 +333,6 @@ class MainWindow(QMainWindow):
                 self.ai_registry.active_provider.name,
                 self.ai_registry.available_providers,
             )
-            self.search_page.refresh_results()
 
     def _open_file(self, path_str: str):
         path = Path(path_str)
@@ -846,7 +845,7 @@ class MainWindow(QMainWindow):
         items = self.model.items
         pending = len(items)
         avg_conf = round(sum(i.confidence for i in items) / len(items)) if items else 0
-        indexed = self.search_index.connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        indexed = self.search_index.stats()["total"]
         self.dashboard_page.update_stats(pending, indexed, avg_conf, 0)
         self.documents_page.set_pending_count(pending)
 

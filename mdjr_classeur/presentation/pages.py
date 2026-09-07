@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import os
-import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, QMimeData, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPainter, QColor, QFont
+from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton, QSizePolicy,
-    QSplitter, QTableView, QTextEdit, QVBoxLayout, QWidget, QScrollArea,
-    QGridLayout,
+    QLabel, QLineEdit, QProgressBar, QPushButton,
+    QSplitter, QTableView, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from ..i18n import tr
