@@ -26,12 +26,14 @@ DEFAULT_SUBJECTS = {
     "Biologie": ["biologie", "cellule", "genetique", "ecosysteme", "anatomie", "physiologie", "microbiologie"],
     "Informatique": ["info", "informatique", "python", "java", "sql", "programmation", "algorithmique", "reseau", "web", "base de donnees", "javascript"],
     "Droit": ["droit", "juridique", "constitution", "contrat", "civil", "penal", "jurisprudence", "loi", "code"],
-    "Finance": ["finance", "budget", "epargne", "assurance", "impot", "impots", "fiscalite", "comptabilite", "investissement"],
+    "Finance": ["finance", "budget", "epargne", "impot", "impots", "fiscalite", "comptabilite", "investissement", "bilan", "tresorerie"],
+    "Assurance": ["assurance", "police", "sinistre", "prime", "souscripteur", "beneficiaire", "assure", "garantie", "risque", "indemnisation", "avenant", "resiliation", "belife", "courtier", "compagnie d assurance", "attestation d assurance", "police d assurance", "numero de police", "couverture", "franchise", "cotisation", "renouvellement"],
     "Marketing": ["marketing", "marque", "campagne publicitaire", "publicite", "communication commerciale"],
     "Économie": ["eco", "economie", "microeconomie", "macroeconomie", "gestion", "marche", "entreprise"],
     "Langues": ["anglais", "english", "espagnol", "allemand", "langue", "grammaire", "vocabulaire", "translation", "traduction"],
     "Sciences": ["physique", "chimie", "biologie", "geologie", "science", "mecanique", "electricite", "thermodynamique"],
     "Gestion": ["management", "ressources humaines", "rh", "organisation", "entrepreneuriat", "communication"],
+    "Comptabilité": ["comptabilite", "facture", "devis", "bon de commande", "bordereau", "releve bancaire", "echeancier", "encaissement", "decaissement", "rapprochement"],
 }
 
 DEFAULT_DOMAINS = {
@@ -41,6 +43,7 @@ DEFAULT_DOMAINS = {
     "Économie et gestion": ["economie", "finance", "comptabilite", "gestion", "marketing", "entreprise"],
     "Langues et communication": ["anglais", "espagnol", "allemand", "langue", "communication", "grammaire"],
     "Administratif": ["administratif", "administration", "scolarite", "inscription", "attestation", "releve de notes"],
+    "Assurance et prévoyance": ["assurance", "police", "sinistre", "prime", "souscripteur", "garantie", "courtier", "compagnie", "couverture", "indemnisation"],
 }
 
 DEFAULT_TOPICS = {
@@ -52,10 +55,13 @@ DEFAULT_TOPICS = {
     "Programmation": ["programmation", "python", "java", "javascript", "algorithmique", "code", "fonction"],
     "Scolarité": ["scolarite", "inscription", "universite", "formation", "etudiant"],
     "Relevé de notes": ["releve de notes", "releve", "resultats", "notes universitaires", "bulletin"],
+    "Police d'assurance": ["police d assurance", "numero de police", "conditions generales", "conditions particulieres", "souscription"],
+    "Sinistre": ["sinistre", "declaration de sinistre", "constat", "dommage", "expertise", "indemnite"],
+    "Cotisation": ["cotisation", "prime", "echeance", "appel de prime", "quittance", "renouvellement"],
 }
 
 DEFAULT_CATEGORIES = {
-    "Administratif": ["administratif", "administration", "inscription", "certificat", "attestation", "bourse", "caf", "universite", "scolarite", "cv", "lettre de motivation", "facture", "identite"],
+    "Administratif": ["administratif", "administration", "inscription", "certificat", "attestation", "bourse", "caf", "universite", "scolarite", "cv", "lettre de motivation", "identite"],
     "Cours": ["cours", "chapitre", "lecon", "syllabus", "support", "theorie", "lecture", "polycopie", "diaporama"],
     "TD": ["td", "travaux diriges", "exercice", "exercices", "feuille", "serie"],
     "TP": ["tp", "travaux pratiques", "laboratoire", "lab", "manipulation", "compte rendu"],
@@ -64,6 +70,10 @@ DEFAULT_CATEGORIES = {
     "Notes": ["note", "notes", "resume", "fiche", "revision", "synthese", "flashcard"],
     "Relevé de notes": ["releve de notes", "releve", "resultats universitaires", "bulletin de notes", "transcript"],
     "Lecture": ["article", "livre", "bibliographie", "recherche", "paper", "publication", "revue"],
+    "Contrat": ["contrat", "convention", "accord", "police d assurance", "avenant", "conditions generales", "conditions particulieres"],
+    "Facture": ["facture", "devis", "bon de commande", "proforma", "avoir", "note de frais", "recu"],
+    "Correspondance": ["courrier", "lettre", "email", "courriel", "notification", "convocation", "mise en demeure", "relance"],
+    "Sinistre": ["sinistre", "declaration de sinistre", "constat amiable", "expertise", "dommage", "indemnisation", "reclamation"],
 }
 
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".py", ".js", ".ts", ".html", ".css", ".xml", ".yml", ".yaml", ".ini", ".log"}
