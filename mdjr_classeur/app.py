@@ -28,6 +28,7 @@ from .application.agent import AgentLedger
 from .application.learning import LearningMemory
 from .application.indexing import SearchIndexService
 from .application.duplicates import DuplicateService
+from .application.ai_provider import AIProviderRegistry, LlamaCppProvider
 from .application.plan import PlanEditService
 from .infrastructure.filesystem import FileOperationService, atomic_write_text, is_ignored_file
 from .infrastructure.history import HistoryRepository
@@ -226,6 +227,10 @@ class MainWindow(QMainWindow):
         self.file_operation_service = FileOperationService(self.search_index.find_duplicate)
         self.duplicate_service = DuplicateService()
         self.plan_edit_service = PlanEditService()
+        self.ai_registry = AIProviderRegistry()
+        model_path = CONFIG_DIR / "models" / "model.gguf"
+        if model_path.exists():
+            self.ai_registry.register(LlamaCppProvider(model_path))
         self.search_worker = None
         self.model = PlanModel(self.plan_edit_service)
         self.scan_thread = None
@@ -323,6 +328,11 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         if index == 3:
             self.refresh_search_index()
+        elif index == 4:
+            self.settings_page.update_ai_status(
+                self.ai_registry.active_provider.name,
+                self.ai_registry.available_providers,
+            )
             self.search_page.refresh_results()
 
     def _open_file(self, path_str: str):

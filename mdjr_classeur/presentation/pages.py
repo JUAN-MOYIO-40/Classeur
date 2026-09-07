@@ -729,6 +729,31 @@ class SettingsPage(QWidget):
         rules_layout.addWidget(rules_btn, alignment=Qt.AlignLeft)
         layout.addWidget(rules_frame)
 
+        # AI Provider section
+        ai_frame = QFrame()
+        ai_frame.setObjectName("settingsSection")
+        ai_layout = QVBoxLayout(ai_frame)
+        ai_layout.setContentsMargins(20, 16, 20, 16)
+
+        ai_title = QLabel(tr("Intelligence locale"))
+        ai_title.setObjectName("sectionTitle")
+        ai_layout.addWidget(ai_title)
+
+        self.ai_status_label = QLabel(tr("Provider actif : heuristiques locales (par défaut)"))
+        self.ai_status_label.setObjectName("sectionDesc")
+        self.ai_status_label.setWordWrap(True)
+        ai_layout.addWidget(self.ai_status_label)
+
+        self.ai_detail_label = QLabel(
+            tr("Pour activer un modèle LLM local, placez un fichier .gguf dans :") + "\n"
+            + tr("~/.mdjr_classeur/models/model.gguf") + "\n"
+            + tr("et installez llama-cli dans votre PATH.")
+        )
+        self.ai_detail_label.setObjectName("sectionDesc")
+        self.ai_detail_label.setWordWrap(True)
+        ai_layout.addWidget(self.ai_detail_label)
+        layout.addWidget(ai_frame)
+
         # Info section
         info_frame = QFrame()
         info_frame.setObjectName("settingsSection")
@@ -750,3 +775,7 @@ class SettingsPage(QWidget):
         layout.addWidget(info_frame)
 
         layout.addStretch()
+
+    def update_ai_status(self, provider_name: str, available_providers: list[str]):
+        providers_text = ", ".join(available_providers) if available_providers else "aucun"
+        self.ai_status_label.setText(f"Provider actif : {provider_name}\nProviders disponibles : {providers_text}")
