@@ -2,9 +2,17 @@
 
 Classeur est une application de bureau locale pour ranger des fichiers et des documents.
 
-L'idée est simple : on choisit un dossier d'arrivée et un dossier de classement. Classeur analyse les fichiers déjà présents, puis surveille l'arrivée de nouveaux fichiers. Il propose une destination, un nom et une arborescence. L'utilisateur peut vérifier avant de copier ou déplacer.
+L'idée est simple : on choisit **un dossier**. Classeur analyse les fichiers qui s'y trouvent et les organise en sous-dossiers, directement sur place. Il propose une destination, un nom et une arborescence. L'utilisateur peut vérifier avant de copier ou déplacer. Un dossier de destination séparé reste possible en option.
 
-Le projet est prévu pour fonctionner sans connexion après l'installation des dépendances. Les documents sont analysés sur l'ordinateur.
+Le projet fonctionne sans connexion. Les documents sont analysés sur l'ordinateur.
+
+## Téléchargement
+
+L'exécutable Windows est disponible ici :
+
+**[Télécharger la dernière version](https://github.com/JUAN-MOYIO-40/Classeur/releases/latest)**
+
+Décompresse l'archive et lance `Classeur.exe`. Aucune installation n'est requise : Python, les bibliothèques et le moteur OCR Tesseract sont inclus dans l'archive.
 
 ## Ce que fait l'application
 
@@ -13,7 +21,7 @@ Classeur peut :
 - analyser les fichiers déjà présents dans un dossier
 - surveiller les nouveaux fichiers pendant que l'application est ouverte
 - lire les noms, les chemins, les fichiers texte, les PDF textuels, les DOCX, les XLSX, les PPTX et certains ODT
-- lire localement les PDF scannés lorsque Tesseract et Poppler sont installés
+- lire localement les PDF scannés et les images (JPG, PNG, TIFF, BMP, WebP) grâce au moteur OCR Tesseract embarqué
 - reconnaître une année ou une période quand le signal est fiable
 - proposer un domaine, une matière, un thème et une nature de document
 - réutiliser les dossiers qui existent déjà
@@ -192,21 +200,21 @@ python main.py
 
 ## Créer l'exécutable Windows
 
-Sur Windows, lance :
+La construction utilise le fichier `classeur.spec` :
 
-```text
-build_windows.bat
+```powershell
+pyinstaller classeur.spec --distpath release --workpath build --noconfirm
 ```
-
-Le script crée l'environnement `.venv`, vérifie les dépendances et lance PyInstaller. Une connexion est nécessaire seulement si une dépendance manque. Après la première installation, une nouvelle construction peut fonctionner sans connexion.
 
 Le résultat est ici :
 
 ```text
-dist\MDJR_Classeur\MDJR_Classeur.exe
+release\Classeur\Classeur.exe
 ```
 
-Il faut partager tout le dossier `dist\MDJR_Classeur`, pas seulement le fichier exe.
+Il faut partager tout le dossier `release\Classeur`, pas seulement le fichier exe.
+
+Le moteur OCR Tesseract est embarqué depuis le dossier local `tesseract/` (non versionné). Pour reconstruire cet exécutable, copie `tesseract.exe`, ses DLL et le dossier `tessdata` d'une installation Tesseract dans un dossier `tesseract/` à la racine du projet.
 
 ## Préférences et apparence
 
@@ -220,14 +228,11 @@ L’onglet `Sécurité` rappelle que la suppression définitive des doublons ne 
 
 ## Première utilisation
 
-Crée deux dossiers séparés :
+Dans Classeur, sélectionne le dossier à organiser. Lance l'analyse des fichiers présents. Vérifie quelques propositions. Ensuite, démarre la surveillance pour les nouveaux fichiers.
 
-```text
-MDJR_A_trier
-MDJR_Classement
-```
+Les fichiers sont rangés en sous-dossiers à l'intérieur de ce même dossier. Seuls les fichiers situés à la racine sont analysés : les sous-dossiers déjà organisés ne sont pas reparcourus.
 
-Dans Classeur, sélectionne le dossier d'arrivée et le dossier de classement. Lance d'abord l'analyse des fichiers déjà présents. Vérifie quelques propositions. Ensuite, démarre la surveillance pour les nouveaux fichiers.
+Si tu préfères séparer l'arrivée et le classement, ouvre `Destination séparée…` sur la page d'import et choisis un second dossier.
 
 Pour une première utilisation, garde le mode copie et le mode de revue. Il est préférable de tester sur une copie de ses documents importants.
 
@@ -289,7 +294,7 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=. python tests/smoke_gui.py
 
 ## Limites connues
 
-Les PDF textuels sont lus directement. Les PDF scannés comme des images peuvent être lus par OCR local si Tesseract, son pack de langue et Poppler sont installés. Sans ces outils, Classeur affiche que l’analyse est limitée au nom et au chemin. Les documents très complexes, les tableaux, les scans flous et certains éléments non textuels peuvent encore être partiellement extraits. Voir [OCR local](docs/OCR_LOCAL.md).
+Les PDF textuels sont lus directement. Les PDF scannés et les images sont lus par OCR local : le moteur Tesseract et les langues française et anglaise sont inclus dans l'exécutable, aucune installation n'est nécessaire. Le tableau de bord indique l'état de l'OCR au démarrage. Les documents très complexes, les tableaux, les scans flous et certains éléments non textuels peuvent encore être partiellement extraits. Voir [OCR local](docs/OCR_LOCAL.md).
 
 Chaque proposition indique maintenant si le contenu a été lu, s’il est absent ou illisible, ou si l’extension n’est pas prise en charge. Le générateur de noms rejette les champs d’identité, les dates de naissance, les numéros administratifs et les dates isolées comme titres ou périodes documentaires. Une confiance affichée reste un score heuristique, pas une garantie mathématique. Les documents importants doivent donc être vérifiés et sauvegardés.
 
