@@ -4,5 +4,6 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
-*.spec
+release/
 *.log
+test_classement/

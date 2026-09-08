@@ -116,13 +116,39 @@ class FileOperationService:
                     duplicate_match = find_content_match(source, search_root, item.sha256 or None, item.normalized_text_sha256 or None)
                 if duplicate_match is not None:
                     duplicate, duplicate_kind = duplicate_match
-                    item.status = "Doublon exact : conservé"
+                    dup_root = item.destination_root or item.destination_dir.parent
+                    dup_dir = dup_root / "Doublons"
+                    dup_dir.mkdir(parents=True, exist_ok=True)
+                    dup_target = unique_target(dup_dir / source.name)
+                    try:
+                        if mode in {"move", "Déplacer l'original"}:
+                            shutil.move(str(source), str(dup_target))
+                            dup_op = "move"
+                        else:
+                            shutil.copy2(str(source), str(dup_target))
+                            dup_op = "copy"
+                    except (OSError, shutil.Error) as dup_exc:
+                        item.status = "Échec doublon : " + str(dup_exc)
+                        results.append({
+                            "source": str(source),
+                            "target": str(dup_target),
+                            "operation": "error",
+                            "error": str(dup_exc),
+                            "batch_id": batch_id,
+                            "timestamp": time.time(),
+                        })
+                        if progress:
+                            progress(int(index * 100 / total), source.name)
+                        continue
+                    item.status = f"Doublon → Doublons/"
+                    item.destination_file = dup_target
                     results.append({
                         "source": str(source),
-                        "target": str(item.destination_file),
+                        "target": str(dup_target),
                         "duplicate_of": str(duplicate),
                         "duplicate_kind": duplicate_kind,
                         "operation": "duplicate",
+                        "sub_operation": dup_op,
                         "timestamp": time.time(),
                         "batch_id": batch_id,
                         "source_size": before.st_size,
