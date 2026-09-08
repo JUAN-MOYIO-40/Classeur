@@ -28,7 +28,7 @@ from .application.agent import AgentLedger
 from .application.learning import LearningMemory
 from .application.indexing import SearchIndexService
 from .application.duplicates import DuplicateService
-from .application.ai_provider import AIProviderRegistry, LlamaCppProvider
+from .application.ai_provider import AIProviderRegistry, KoboldCppProvider, LlamaCppProvider
 from .application.plan import PlanEditService
 from .infrastructure.filesystem import FileOperationService, atomic_write_text, is_ignored_file
 from .infrastructure.history import HistoryRepository
@@ -232,9 +232,15 @@ class MainWindow(QMainWindow):
         llm_threshold = int(self.preferences.get("llm_threshold", 80))
         self.ai_registry = AIProviderRegistry(llm_threshold=llm_threshold, mode=ai_mode)
         self.model_path = CONFIG_DIR / "models" / "model.gguf"
-        if self.model_path.exists():
-            self.ai_registry.register(LlamaCppProvider(self.model_path))
         self.system_capabilities = detect_capabilities()
+        if self.model_path.exists():
+            if self.system_capabilities.has_koboldcpp:
+                self.ai_registry.register(KoboldCppProvider(
+                    self.model_path, exe_path=self.system_capabilities.koboldcpp_path,
+                ))
+            elif self.system_capabilities.has_llama_cli:
+                cli_name = self.system_capabilities.llama_cli_path
+                self.ai_registry.register(LlamaCppProvider(self.model_path, cli_name=cli_name))
         self.search_worker = None
         self.model = PlanModel(self.plan_edit_service)
         self.scan_thread = None

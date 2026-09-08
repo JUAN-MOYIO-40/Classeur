@@ -6,6 +6,8 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -377,6 +379,207 @@ class LlamaCppProvider(BaseAIProvider):
 
 
 # ---------------------------------------------------------------------------
+# KoboldCppProvider — provider LLM local via koboldcpp HTTP API
+# ---------------------------------------------------------------------------
+
+class KoboldCppProvider(BaseAIProvider):
+    """Provider pour modèle GGUF local via koboldcpp (API HTTP locale).
+
+    Alternative à LlamaCppProvider quand llama-cli ne fonctionne pas.
+    Koboldcpp lance un serveur HTTP local et expose une API OpenAI-compatible.
+    """
+
+    def __init__(self, model_path: Path | None = None,
+                 exe_path: str = "koboldcpp.exe",
+                 port: int = 5001, threads: int = 2,
+                 context_size: int = 512, timeout: int = 180):
+        self._model_path = model_path
+        self._exe_path = exe_path
+        self._port = port
+        self._threads = threads
+        self._context_size = context_size
+        self._timeout = timeout
+        self._last_error: str = ""
+        self._available_cache: bool | None = None
+        self._process: subprocess.Popen | None = None
+        self._base_url = f"http://localhost:{port}"
+
+    @property
+    def name(self) -> str:
+        return "koboldcpp-local"
+
+    @property
+    def available(self) -> bool:
+        if self._available_cache is not None:
+            return self._available_cache
+        result = self._check_available()
+        self._available_cache = result
+        return result
+
+    def _check_available(self) -> bool:
+        if not Path(self._exe_path).is_file() and not shutil.which(self._exe_path):
+            self._last_error = "koboldcpp introuvable"
+            return False
+        if self._model_path is None or not self._model_path.exists():
+            self._last_error = "Fichier modèle introuvable"
+            return False
+        if self._model_path.stat().st_size < 100_000:
+            self._last_error = "Fichier modèle trop petit (possiblement corrompu)"
+            return False
+        return True
+
+    def invalidate_cache(self):
+        self._available_cache = None
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
+    def _ensure_server(self) -> bool:
+        """Démarre le serveur koboldcpp si pas déjà en cours."""
+        if self._process is not None and self._process.poll() is None:
+            try:
+                req = urllib.request.Request(f"{self._base_url}/api/v1/model", method="GET")
+                with urllib.request.urlopen(req, timeout=2):
+                    return True
+            except Exception:
+                pass
+
+        cmd = [
+            self._exe_path, "--model", str(self._model_path),
+            "--usecpu", "--threads", str(self._threads),
+            "--contextsize", str(self._context_size),
+            "--port", str(self._port), "--quiet", "--skiplauncher",
+        ]
+        try:
+            self._process = subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError as exc:
+            self._last_error = f"Impossible de lancer koboldcpp: {exc}"
+            return False
+
+        for _ in range(60):
+            if self._process.poll() is not None:
+                self._last_error = f"koboldcpp s'est arrêté (code {self._process.returncode})"
+                return False
+            try:
+                req = urllib.request.Request(f"{self._base_url}/api/v1/model", method="GET")
+                with urllib.request.urlopen(req, timeout=2):
+                    return True
+            except Exception:
+                time.sleep(2)
+        self._last_error = "koboldcpp timeout au démarrage"
+        return False
+
+    def stop_server(self):
+        """Arrête le serveur koboldcpp."""
+        if self._process is not None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+            self._process = None
+
+    def _chat(self, messages: list[dict], max_tokens: int = 256) -> tuple[str, int]:
+        """Envoie une requête chat completions et retourne (output, duration_ms)."""
+        if not self._ensure_server():
+            return "", 0
+        payload = json.dumps({
+            "model": "koboldcpp",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.1,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self._base_url}/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        start = time.monotonic()
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                data = json.loads(resp.read())
+                duration = int((time.monotonic() - start) * 1000)
+                return data["choices"][0]["message"]["content"].strip(), duration
+        except urllib.error.URLError as exc:
+            duration = int((time.monotonic() - start) * 1000)
+            self._last_error = f"Erreur API: {exc}"
+            return "", duration
+        except Exception as exc:
+            duration = int((time.monotonic() - start) * 1000)
+            self._last_error = str(exc)
+            return "", duration
+
+    def summarize(self, text: str, max_words: int = 50) -> AIResponse:
+        messages = [
+            {"role": "system", "content": f"Résume le texte en {max_words} mots maximum. Réponds uniquement avec le résumé."},
+            {"role": "user", "content": text[:3000]},
+        ]
+        output, duration = self._chat(messages, max_tokens=200)
+        return AIResponse(output, 0.75 if output else 0.0, self.name, duration_ms=duration)
+
+    def suggest_classification(self, text: str, filename: str, subjects: dict[str, list[str]], categories: dict[str, list[str]]) -> AIResponse:
+        subject_list = ", ".join(subjects.keys())
+        category_list = ", ".join(categories.keys())
+        messages = [
+            {"role": "system", "content": "Tu es un assistant de classification documentaire. Réponds UNIQUEMENT avec un objet JSON valide."},
+            {"role": "user", "content": (
+                f"Analyse ce document et classifie-le.\n\n"
+                f"Fichier : {filename}\nContenu : {text[:2500]}\n\n"
+                f"Matières possibles : {subject_list}\n"
+                f"Catégories possibles : {category_list}\n\n"
+                f'Réponds avec ce JSON : {{"category": "...", "subject": "...", "confidence": 0.XX, "reason": "..."}}'
+            )},
+        ]
+        output, duration = self._chat(messages, max_tokens=256)
+        suggestions = {}
+        parsed = _extract_json(output)
+        if parsed:
+            if parsed.get("subject") in subjects:
+                suggestions["subject"] = parsed["subject"]
+            if parsed.get("category") in categories:
+                suggestions["category"] = parsed["category"]
+            confidence = 0.80 if suggestions else 0.40
+            reason = parsed.get("reason", output[:200])
+        else:
+            confidence = 0.30
+            reason = output[:200]
+        return AIResponse(reason, confidence, self.name, suggestions, duration_ms=duration)
+
+    def suggest_filename(self, text: str, current_name: str, classification: Classification) -> AIResponse:
+        messages = [
+            {"role": "system", "content": "Propose un nom de fichier descriptif. Réponds UNIQUEMENT avec le nom, sans extension."},
+            {"role": "user", "content": (
+                f"Fichier actuel : {current_name}\n"
+                f"Matière : {classification.subject}\n"
+                f"Catégorie : {classification.category}\n"
+                f"Contenu : {text[:2000]}"
+            )},
+        ]
+        output, duration = self._chat(messages, max_tokens=100)
+        output = re.sub(r'[<>:"/\\|?*\n\r]', '', output).strip()[:120]
+        output = output.strip('"\'` ')
+        return AIResponse(
+            output or current_name,
+            0.70 if output else 0.0,
+            self.name,
+            {"suggested_name": output} if output else {},
+            duration_ms=duration,
+        )
+
+    def answer_question(self, question: str, context: str) -> AIResponse:
+        messages = [
+            {"role": "system", "content": "Réponds à la question en te basant uniquement sur le contexte fourni. Si l'information n'est pas dans le contexte, dis-le clairement."},
+            {"role": "user", "content": f"Contexte :\n{context[:3000]}\n\nQuestion : {question}"},
+        ]
+        output, duration = self._chat(messages)
+        return AIResponse(output, 0.75 if output else 0.0, self.name, duration_ms=duration)
+
+
+# ---------------------------------------------------------------------------
 # AIProviderRegistry — registre avec cascade et seuil configurable
 # ---------------------------------------------------------------------------
 
@@ -421,7 +624,7 @@ class AIProviderRegistry:
     def llm_provider(self) -> BaseAIProvider | None:
         """Retourne le provider LLM s'il est enregistré et disponible."""
         for p in self._providers:
-            if isinstance(p, LlamaCppProvider) and p.available:
+            if isinstance(p, (LlamaCppProvider, KoboldCppProvider)) and p.available:
                 return p
         return None
 

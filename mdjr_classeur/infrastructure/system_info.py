@@ -20,6 +20,8 @@ class SystemCapabilities:
     os_name: str
     has_llama_cli: bool
     llama_cli_path: str
+    has_koboldcpp: bool = False
+    koboldcpp_path: str = ""
 
 
 def _ram_info() -> tuple[int, int]:
@@ -69,9 +71,37 @@ def _cpu_name() -> str:
     return platform.processor() or "Unknown"
 
 
+def _find_llama_cli() -> str:
+    """Cherche llama-cli dans le PATH, puis dans le dossier runtime de l'application."""
+    found = shutil.which("llama-cli")
+    if found:
+        return found
+    config_dir = Path.home() / ".mdjr_classeur"
+    runtime_dir = config_dir / "runtime"
+    if runtime_dir.is_dir():
+        for sub in sorted(runtime_dir.iterdir(), reverse=True):
+            candidate = sub / "llama-cli.exe" if platform.system() == "Windows" else sub / "llama-cli"
+            if candidate.is_file():
+                return str(candidate)
+    return ""
+
+
+def _find_koboldcpp() -> str:
+    """Cherche koboldcpp dans le dossier runtime de l'application."""
+    config_dir = Path.home() / ".mdjr_classeur"
+    runtime_dir = config_dir / "runtime"
+    exe_name = "koboldcpp.exe" if platform.system() == "Windows" else "koboldcpp"
+    candidate = runtime_dir / exe_name
+    if candidate.is_file():
+        return str(candidate)
+    found = shutil.which("koboldcpp")
+    return found or ""
+
+
 def detect_capabilities() -> SystemCapabilities:
     total, available = _ram_info()
-    llama_path = shutil.which("llama-cli") or ""
+    llama_path = _find_llama_cli()
+    kobold_path = _find_koboldcpp()
     return SystemCapabilities(
         total_ram_mb=total,
         available_ram_mb=available,
@@ -80,6 +110,8 @@ def detect_capabilities() -> SystemCapabilities:
         os_name=f"{platform.system()} {platform.release()}",
         has_llama_cli=bool(llama_path),
         llama_cli_path=llama_path,
+        has_koboldcpp=bool(kobold_path),
+        koboldcpp_path=kobold_path,
     )
 
 
@@ -116,7 +148,8 @@ def recommend_mode(capabilities: SystemCapabilities, model_path: Path) -> str:
     Retourne: 'llm_local', 'heuristic_only', ou 'heuristic_recommended'.
     """
     info = model_file_info(model_path)
-    if info is None or not capabilities.has_llama_cli:
+    has_runtime = capabilities.has_llama_cli or capabilities.has_koboldcpp
+    if info is None or not has_runtime:
         return "heuristic_only"
     estimated_ram = info["estimated_ram_mb"]
     if capabilities.total_ram_mb < 6000:

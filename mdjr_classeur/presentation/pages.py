@@ -828,11 +828,18 @@ class SettingsPage(QWidget):
             ram_avail = getattr(system_info, "available_ram_mb", 0)
             cpu = getattr(system_info, "cpu_name", "")
             cores = getattr(system_info, "cpu_count", 0)
-            runtime = tr("détecté") if getattr(system_info, "has_llama_cli", False) else tr("absent")
+            has_llama = getattr(system_info, "has_llama_cli", False)
+            has_kobold = getattr(system_info, "has_koboldcpp", False)
+            if has_kobold:
+                runtime = f"koboldcpp ({tr('détecté')})"
+            elif has_llama:
+                runtime = f"llama-cli ({tr('détecté')})"
+            else:
+                runtime = tr("absent")
             self.ai_system_label.setText(
                 f"RAM : {ram_total} Mo ({ram_avail} Mo disponible)\n"
                 f"CPU : {cpu} ({cores} cœurs)\n"
-                f"Runtime llama-cli : {runtime}"
+                f"Runtime : {runtime}"
             )
         else:
             self.ai_system_label.setText("")

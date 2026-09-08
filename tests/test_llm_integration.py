@@ -24,6 +24,7 @@ from mdjr_classeur.application.ai_provider import (
     AIProviderRegistry,
     AIResponse,
     BaseAIProvider,
+    KoboldCppProvider,
     LlamaCppProvider,
     LocalHeuristicProvider,
     _extract_json,
@@ -33,6 +34,8 @@ from mdjr_classeur.infrastructure.system_info import (
     detect_capabilities,
     model_file_info,
     recommend_mode,
+    _find_koboldcpp,
+    _find_llama_cli,
     _format_size,
 )
 from mdjr_classeur.preferences import (
@@ -682,6 +685,22 @@ class TestSystemInfo:
         assert "Mo" in _format_size(5_000_000)
         assert "Go" in _format_size(5_000_000_000)
 
+    def test_find_llama_cli_in_runtime_dir(self, tmp_path):
+        runtime = tmp_path / "runtime" / "llama-build"
+        runtime.mkdir(parents=True)
+        exe = runtime / ("llama-cli.exe" if os.name == "nt" else "llama-cli")
+        exe.write_bytes(b"\x00" * 100)
+        with patch("mdjr_classeur.infrastructure.system_info.shutil.which", return_value=None), \
+             patch("mdjr_classeur.infrastructure.system_info.Path.home", return_value=tmp_path):
+            # Create the expected directory structure
+            config_dir = tmp_path / ".mdjr_classeur" / "runtime" / "llama-build"
+            config_dir.mkdir(parents=True)
+            cli = config_dir / ("llama-cli.exe" if os.name == "nt" else "llama-cli")
+            cli.write_bytes(b"\x00" * 100)
+            result = _find_llama_cli()
+            assert result != ""
+            assert "llama-cli" in result
+
     def test_model_file_info_existing(self, tmp_path):
         model = tmp_path / "model.gguf"
         model.write_bytes(b"\x00" * 2_000_000)
@@ -754,3 +773,82 @@ class TestRegistryModes:
         mock.available = True
         reg.register(mock)
         assert reg.llm_provider is mock
+
+
+class TestKoboldCppProvider:
+
+    def test_kobold_unavailable_no_exe(self, tmp_path):
+        provider = KoboldCppProvider(tmp_path / "model.gguf", exe_path="/nonexistent/koboldcpp.exe")
+        assert not provider.available
+        assert "introuvable" in provider.last_error
+
+    def test_kobold_unavailable_no_model(self, tmp_path):
+        exe = tmp_path / "koboldcpp.exe"
+        exe.write_bytes(b"\x00" * 100)
+        provider = KoboldCppProvider(tmp_path / "missing.gguf", exe_path=str(exe))
+        assert not provider.available
+        assert "modèle" in provider.last_error.lower()
+
+    def test_kobold_available_with_exe_and_model(self, tmp_path):
+        exe = tmp_path / "koboldcpp.exe"
+        exe.write_bytes(b"\x00" * 100)
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"\x00" * 200_000)
+        provider = KoboldCppProvider(model, exe_path=str(exe))
+        assert provider.available
+
+    def test_kobold_invalidate_cache(self, tmp_path):
+        exe = tmp_path / "koboldcpp.exe"
+        exe.write_bytes(b"\x00" * 100)
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"\x00" * 200_000)
+        provider = KoboldCppProvider(model, exe_path=str(exe))
+        assert provider.available
+        provider.invalidate_cache()
+        assert provider.available
+
+    def test_kobold_name(self, tmp_path):
+        provider = KoboldCppProvider(tmp_path / "model.gguf")
+        assert provider.name == "koboldcpp-local"
+
+    def test_registry_recognizes_kobold_as_llm(self):
+        reg = AIProviderRegistry(mode="auto")
+        mock = MagicMock(spec=KoboldCppProvider)
+        mock.name = "koboldcpp-local"
+        mock.available = True
+        reg.register(mock)
+        assert reg.llm_provider is mock
+        assert reg.active_provider.name == "koboldcpp-local"
+
+    def test_kobold_stop_server_safe(self, tmp_path):
+        provider = KoboldCppProvider(tmp_path / "model.gguf")
+        provider.stop_server()
+
+    def test_kobold_chat_without_server(self, tmp_path):
+        exe = tmp_path / "koboldcpp.exe"
+        exe.write_bytes(b"\x00" * 100)
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"\x00" * 200_000)
+        provider = KoboldCppProvider(model, exe_path=str(exe))
+        result = provider.summarize("test text")
+        assert result.confidence == 0.0
+
+
+class TestKoboldDetection:
+
+    def test_detect_koboldcpp_in_runtime(self, tmp_path):
+        from mdjr_classeur.infrastructure.system_info import _find_koboldcpp
+        runtime = tmp_path / ".mdjr_classeur" / "runtime"
+        runtime.mkdir(parents=True)
+        exe = runtime / ("koboldcpp.exe" if os.name == "nt" else "koboldcpp")
+        exe.write_bytes(b"\x00" * 100)
+        with patch("mdjr_classeur.infrastructure.system_info.Path.home", return_value=tmp_path), \
+             patch("mdjr_classeur.infrastructure.system_info.shutil.which", return_value=None):
+            result = _find_koboldcpp()
+            assert result != ""
+            assert "koboldcpp" in result
+
+    def test_capabilities_include_kobold_fields(self):
+        caps = detect_capabilities()
+        assert isinstance(caps.has_koboldcpp, bool)
+        assert isinstance(caps.koboldcpp_path, str)
