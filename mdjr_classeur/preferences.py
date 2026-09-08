@@ -6,12 +6,16 @@ import re
 import time
 from pathlib import Path
 
+VALID_AI_MODES = {"auto", "heuristic_only", "llm_local"}
+
 DEFAULT_PREFERENCES = {
     "language": "fr",
     "theme": "system",
     "accent": "#1c8c70",
     "background": "",
     "confirm_actions": True,
+    "ai_mode": "auto",
+    "llm_threshold": 80,
 }
 VALID_LANGUAGES = {"fr", "en"}
 VALID_THEMES = {"system", "light", "dark"}
@@ -40,6 +44,12 @@ def load_preferences(path: Path) -> dict[str, object]:
                 values["background"] = background
             if isinstance(raw.get("confirm_actions"), bool):
                 values["confirm_actions"] = raw["confirm_actions"]
+            ai_mode = raw.get("ai_mode")
+            if ai_mode in VALID_AI_MODES:
+                values["ai_mode"] = ai_mode
+            llm_threshold = raw.get("llm_threshold")
+            if isinstance(llm_threshold, (int, float)) and 0 <= llm_threshold <= 100:
+                values["llm_threshold"] = int(llm_threshold)
     except (OSError, json.JSONDecodeError, TypeError):
         pass
     background = str(values["background"] or "")
@@ -56,6 +66,10 @@ def save_preferences(path: Path, values: dict[str, object]) -> None:
     background = str(values.get("background") or "")
     payload["background"] = background if not background or Path(background).expanduser().is_file() else ""
     payload["confirm_actions"] = bool(values.get("confirm_actions", True))
+    ai_mode = values.get("ai_mode")
+    payload["ai_mode"] = ai_mode if ai_mode in VALID_AI_MODES else "auto"
+    llm_threshold = values.get("llm_threshold", 80)
+    payload["llm_threshold"] = int(llm_threshold) if isinstance(llm_threshold, (int, float)) and 0 <= llm_threshold <= 100 else 80
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{time.time_ns()}")
     try:

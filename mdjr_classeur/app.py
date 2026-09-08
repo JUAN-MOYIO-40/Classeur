@@ -32,6 +32,7 @@ from .application.ai_provider import AIProviderRegistry, LlamaCppProvider
 from .application.plan import PlanEditService
 from .infrastructure.filesystem import FileOperationService, atomic_write_text, is_ignored_file
 from .infrastructure.history import HistoryRepository
+from .infrastructure.system_info import detect_capabilities, model_file_info, recommend_mode
 from .infrastructure.watcher import Observer, WatchEventHandler
 from .presentation.dialogs import (
     DuplicateDialog, HierarchyDialog, HistoryDialog, PreferencesDialog, RulesDialog, SearchDialog,
@@ -227,10 +228,13 @@ class MainWindow(QMainWindow):
         self.file_operation_service = FileOperationService(self.search_index.find_duplicate)
         self.duplicate_service = DuplicateService()
         self.plan_edit_service = PlanEditService()
-        self.ai_registry = AIProviderRegistry()
-        model_path = CONFIG_DIR / "models" / "model.gguf"
-        if model_path.exists():
-            self.ai_registry.register(LlamaCppProvider(model_path))
+        ai_mode = str(self.preferences.get("ai_mode", "auto"))
+        llm_threshold = int(self.preferences.get("llm_threshold", 80))
+        self.ai_registry = AIProviderRegistry(llm_threshold=llm_threshold, mode=ai_mode)
+        self.model_path = CONFIG_DIR / "models" / "model.gguf"
+        if self.model_path.exists():
+            self.ai_registry.register(LlamaCppProvider(self.model_path))
+        self.system_capabilities = detect_capabilities()
         self.search_worker = None
         self.model = PlanModel(self.plan_edit_service)
         self.scan_thread = None
@@ -316,6 +320,7 @@ class MainWindow(QMainWindow):
         self.settings_page = SettingsPage()
         self.settings_page.preferences_requested.connect(self.open_preferences)
         self.settings_page.rules_requested.connect(self.open_rules)
+        self.settings_page.ai_mode_combo.currentIndexChanged.connect(self._on_ai_mode_changed)
         self.stack.addWidget(self.settings_page)
 
         root.addWidget(self.stack, 1)
@@ -332,6 +337,9 @@ class MainWindow(QMainWindow):
             self.settings_page.update_ai_status(
                 self.ai_registry.active_provider.name,
                 self.ai_registry.available_providers,
+                model_info=model_file_info(self.model_path),
+                system_info=self.system_capabilities,
+                current_mode=self.ai_registry.mode,
             )
 
     def _open_file(self, path_str: str):
@@ -376,6 +384,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME + " — " + tr("votre assistant documentaire local"))
         if old_language != str(self.preferences.get("language", "fr")):
             QMessageBox.information(self, tr("Préférences"), tr("Les changements de langue seront appliqués au prochain démarrage."))
+
+    def _on_ai_mode_changed(self):
+        mode = self.settings_page.ai_mode_combo.currentData() or "auto"
+        self.ai_registry.mode = mode
+        self.preferences["ai_mode"] = mode
+        save_preferences(PREFERENCES_FILE, self.preferences)
 
     # ------------------------------------------------------------------
     # Tray

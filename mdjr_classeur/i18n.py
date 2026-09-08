@@ -126,6 +126,22 @@ ENGLISH = {
     "Thèmes": "Topics",
     "Aperçu de l’arborescence - MDJR classeur": "Hierarchy preview - MDJR Classeur",
     "Analyse intelligente des doublons - MDJR classeur": "Intelligent duplicate analysis - MDJR Classeur",
+    "Mode IA :": "AI Mode:",
+    "Automatique": "Automatic",
+    "Heuristiques uniquement": "Heuristics only",
+    "LLM local": "Local LLM",
+    "Disponible": "Available",
+    "IA locale : non installée": "Local AI: not installed",
+    "Classeur fonctionne normalement sans IA locale.": "Classeur works normally without local AI.",
+    "L’IA locale permet d’améliorer :": "Local AI can improve:",
+    "  - les classifications ambiguës": "  - ambiguous classifications",
+    "  - les suggestions de noms": "  - filename suggestions",
+    "  - les résumés": "  - summaries",
+    "  - les questions sur les documents": "  - document questions",
+    "Pour activer, placez un fichier .gguf dans :": "To activate, place a .gguf file in:",
+    "et installez llama-cli dans votre PATH.": "and install llama-cli in your PATH.",
+    "détecté": "detected",
+    "absent": "missing",
 }
 
 

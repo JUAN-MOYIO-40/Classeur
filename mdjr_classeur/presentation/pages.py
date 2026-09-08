@@ -731,24 +731,39 @@ class SettingsPage(QWidget):
         ai_frame.setObjectName("settingsSection")
         ai_layout = QVBoxLayout(ai_frame)
         ai_layout.setContentsMargins(20, 16, 20, 16)
+        ai_layout.setSpacing(10)
 
         ai_title = QLabel(tr("Intelligence locale"))
         ai_title.setObjectName("sectionTitle")
         ai_layout.addWidget(ai_title)
 
-        self.ai_status_label = QLabel(tr("Provider actif : heuristiques locales (par défaut)"))
+        self.ai_status_label = QLabel()
         self.ai_status_label.setObjectName("sectionDesc")
         self.ai_status_label.setWordWrap(True)
         ai_layout.addWidget(self.ai_status_label)
 
-        self.ai_detail_label = QLabel(
-            tr("Pour activer un modèle LLM local, placez un fichier .gguf dans :") + "\n"
-            + tr("~/.mdjr_classeur/models/model.gguf") + "\n"
-            + tr("et installez llama-cli dans votre PATH.")
-        )
+        self.ai_detail_label = QLabel()
         self.ai_detail_label.setObjectName("sectionDesc")
         self.ai_detail_label.setWordWrap(True)
         ai_layout.addWidget(self.ai_detail_label)
+
+        self.ai_system_label = QLabel()
+        self.ai_system_label.setObjectName("sectionDesc")
+        self.ai_system_label.setWordWrap(True)
+        ai_layout.addWidget(self.ai_system_label)
+
+        # Mode selector
+        mode_row = QHBoxLayout()
+        mode_label = QLabel(tr("Mode IA :"))
+        self.ai_mode_combo = QComboBox()
+        self.ai_mode_combo.addItem(tr("Automatique"), "auto")
+        self.ai_mode_combo.addItem(tr("Heuristiques uniquement"), "heuristic_only")
+        self.ai_mode_combo.addItem(tr("LLM local"), "llm_local")
+        mode_row.addWidget(mode_label)
+        mode_row.addWidget(self.ai_mode_combo)
+        mode_row.addStretch()
+        ai_layout.addLayout(mode_row)
+
         layout.addWidget(ai_frame)
 
         # Info section
@@ -773,6 +788,54 @@ class SettingsPage(QWidget):
 
         layout.addStretch()
 
-    def update_ai_status(self, provider_name: str, available_providers: list[str]):
-        providers_text = ", ".join(available_providers) if available_providers else "aucun"
-        self.ai_status_label.setText(f"Provider actif : {provider_name}\nProviders disponibles : {providers_text}")
+    def update_ai_status(self, provider_name: str, available_providers: list[str],
+                         model_info: dict | None = None,
+                         system_info: object | None = None,
+                         current_mode: str = "auto"):
+        has_llm = "llama-cpp-local" in available_providers
+        if has_llm and model_info:
+            status = tr("Disponible")
+            self.ai_status_label.setText(
+                f"IA locale : {status}\n"
+                f"Provider actif : {provider_name}"
+            )
+            detail_parts = []
+            if model_info.get("name"):
+                detail_parts.append(f"Modèle : {model_info['name']}")
+            if model_info.get("size_display"):
+                detail_parts.append(f"Taille : {model_info['size_display']}")
+            if model_info.get("estimated_ram_mb"):
+                detail_parts.append(f"RAM estimée : ~{model_info['estimated_ram_mb']} Mo")
+            detail_parts.append("Internet : non requis")
+            self.ai_detail_label.setText("\n".join(detail_parts))
+        else:
+            self.ai_status_label.setText(
+                tr("IA locale : non installée") + "\n"
+                + tr("Classeur fonctionne normalement sans IA locale.")
+            )
+            self.ai_detail_label.setText(
+                tr("L'IA locale permet d'améliorer :") + "\n"
+                + tr("  - les classifications ambiguës") + "\n"
+                + tr("  - les suggestions de noms") + "\n"
+                + tr("  - les résumés") + "\n"
+                + tr("  - les questions sur les documents") + "\n\n"
+                + tr("Pour activer, placez un fichier .gguf dans :") + "\n"
+                + "~/.mdjr_classeur/models/model.gguf\n"
+                + tr("et installez llama-cli dans votre PATH.")
+            )
+        if system_info is not None:
+            ram_total = getattr(system_info, "total_ram_mb", 0)
+            ram_avail = getattr(system_info, "available_ram_mb", 0)
+            cpu = getattr(system_info, "cpu_name", "")
+            cores = getattr(system_info, "cpu_count", 0)
+            runtime = tr("détecté") if getattr(system_info, "has_llama_cli", False) else tr("absent")
+            self.ai_system_label.setText(
+                f"RAM : {ram_total} Mo ({ram_avail} Mo disponible)\n"
+                f"CPU : {cpu} ({cores} cœurs)\n"
+                f"Runtime llama-cli : {runtime}"
+            )
+        else:
+            self.ai_system_label.setText("")
+        idx = self.ai_mode_combo.findData(current_mode)
+        if idx >= 0:
+            self.ai_mode_combo.setCurrentIndex(idx)
