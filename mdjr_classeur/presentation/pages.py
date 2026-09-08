@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QSplitter, QTableView, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from .. import __version__ as APP_VERSION
 from ..i18n import tr
 
 
@@ -69,7 +70,7 @@ class Sidebar(QFrame):
 
         layout.addStretch()
 
-        version_label = QLabel("v3.0")
+        version_label = QLabel(f"v{APP_VERSION}")
         version_label.setObjectName("sidebarVersion")
         version_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(version_label)
