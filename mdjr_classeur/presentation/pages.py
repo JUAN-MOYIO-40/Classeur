@@ -192,6 +192,11 @@ class DashboardPage(QWidget):
         self.activity_label.setObjectName("activityLabel")
         self.activity_label.setWordWrap(True)
         status_layout.addWidget(self.activity_label)
+
+        self.ocr_label = QLabel()
+        self.ocr_label.setObjectName("activityLabel")
+        self.ocr_label.setWordWrap(True)
+        status_layout.addWidget(self.ocr_label)
         layout.addWidget(self.status_frame)
 
         layout.addStretch()
@@ -242,7 +247,7 @@ class DropZone(QFrame):
         label.setAlignment(Qt.AlignCenter)
         layout.addWidget(label)
 
-        sublabel = QLabel(tr("PDF, DOCX, XLSX, PPTX, ODT, TXT et autres"))
+        sublabel = QLabel(tr("PDF, DOCX, XLSX, images (JPG, PNG, TIFF…) et autres"))
         sublabel.setObjectName("dropSublabel")
         sublabel.setAlignment(Qt.AlignCenter)
         layout.addWidget(sublabel)
@@ -301,7 +306,7 @@ class ImportPage(QWidget):
         folders_layout.setContentsMargins(20, 16, 20, 16)
 
         source_row = QHBoxLayout()
-        source_row.addWidget(QLabel(tr("Dossier source")))
+        source_row.addWidget(QLabel(tr("Dossier à organiser")))
         self.source_edit = QLineEdit()
         self.source_edit.setPlaceholderText(tr("Dossier contenant les fichiers à organiser…"))
         self.source_edit.textChanged.connect(self.source_changed)
@@ -312,17 +317,28 @@ class ImportPage(QWidget):
         source_row.addWidget(source_btn)
         folders_layout.addLayout(source_row)
 
-        dest_row = QHBoxLayout()
-        dest_row.addWidget(QLabel(tr("Dossier de classement")))
+        # Destination row (advanced — hidden by default, destination = source)
+        self._dest_widget = QWidget()
+        dest_inner = QHBoxLayout(self._dest_widget)
+        dest_inner.setContentsMargins(0, 0, 0, 0)
+        dest_inner.addWidget(QLabel(tr("Dossier de classement")))
         self.destination_edit = QLineEdit()
-        self.destination_edit.setPlaceholderText(tr("Dossier de destination pour l'organisation…"))
+        self.destination_edit.setPlaceholderText(tr("Par défaut : même dossier que la source"))
         self.destination_edit.textChanged.connect(self.destination_changed)
-        dest_row.addWidget(self.destination_edit, 1)
+        dest_inner.addWidget(self.destination_edit, 1)
         dest_btn = QPushButton(tr("Parcourir"))
         dest_btn.setObjectName("secondary")
         dest_btn.clicked.connect(self._choose_destination)
-        dest_row.addWidget(dest_btn)
-        folders_layout.addLayout(dest_row)
+        dest_inner.addWidget(dest_btn)
+        folders_layout.addWidget(self._dest_widget)
+        self._dest_widget.setVisible(False)
+
+        self._advanced_toggle = QPushButton(tr("Destination séparée…"))
+        self._advanced_toggle.setObjectName("link")
+        self._advanced_toggle.setFlat(True)
+        self._advanced_toggle.setCursor(Qt.PointingHandCursor)
+        self._advanced_toggle.clicked.connect(self._toggle_destination)
+        folders_layout.addWidget(self._advanced_toggle)
         layout.addWidget(folders_frame)
 
         # Drop zone
@@ -361,12 +377,19 @@ class ImportPage(QWidget):
 
         layout.addStretch()
 
+    def _toggle_destination(self):
+        visible = not self._dest_widget.isVisible()
+        self._dest_widget.setVisible(visible)
+        self._advanced_toggle.setText(
+            tr("Masquer la destination") if visible else tr("Destination séparée…")
+        )
+        if not visible:
+            self.destination_edit.clear()
+
     def _choose_source(self):
-        chosen = QFileDialog.getExistingDirectory(self, tr("Choisir le dossier source"))
+        chosen = QFileDialog.getExistingDirectory(self, tr("Choisir le dossier à organiser"))
         if chosen:
             self.source_edit.setText(chosen)
-            if not self.destination_edit.text():
-                self.destination_edit.setText(str(Path(chosen).parent / "MDJR_Classement"))
 
     def _choose_destination(self):
         chosen = QFileDialog.getExistingDirectory(self, tr("Choisir le dossier de classement"))

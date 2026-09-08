@@ -79,21 +79,12 @@ def build_stylesheet(theme: str, accent: QColor, background: str = "") -> str:
         drop_border = "#2a3f52"
         drop_hover = "#1e3a4f"
         badge_bg = accent.name()
-    elif theme == "light":
-        window = "#f5f7fa"
-        surface = "#ffffff"
-        field = "#ffffff"
-        text = "#1a2b3c"
-        muted = "#6b7f8e"
-        border = "#dce3eb"
-        sidebar_bg = "#1a2b3c"
-        sidebar_text = "#94a7b8"
-        sidebar_active_bg = accent.name()
-        sidebar_active_text = "#ffffff"
-        drop_bg = "#f0f4f8"
-        drop_border = "#d0d8e0"
-        drop_hover = "#e4ecf4"
-        badge_bg = accent.name()
+        danger_bg = "#3b1c1c"
+        danger_text = "#f87171"
+        danger_border = "#7f1d1d"
+        danger_hover = "#4c2020"
+        tooltip_bg = "#1e2d3d"
+        tooltip_text = "#e8f0f8"
     else:
         window = "#f5f7fa"
         surface = "#ffffff"
@@ -109,6 +100,12 @@ def build_stylesheet(theme: str, accent: QColor, background: str = "") -> str:
         drop_border = "#d0d8e0"
         drop_hover = "#e4ecf4"
         badge_bg = accent.name()
+        danger_bg = "#fef2f2"
+        danger_text = "#b91c1c"
+        danger_border = "#fecaca"
+        danger_hover = "#fee2e2"
+        tooltip_bg = "#ffffff"
+        tooltip_text = "#1a2b3c"
 
     hover = accent.darker(115).name()
     image_rule = ""
@@ -158,8 +155,10 @@ def build_stylesheet(theme: str, accent: QColor, background: str = "") -> str:
         QPushButton:disabled {{ background: {border}; color: {muted}; }}
         QPushButton#secondary {{ background: {surface}; color: {text}; border: 1px solid {border}; }}
         QPushButton#secondary:hover {{ background: {drop_hover}; }}
-        QPushButton#danger {{ background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }}
-        QPushButton#danger:hover {{ background: #fee2e2; }}
+        QPushButton#danger {{ background: {danger_bg}; color: {danger_text}; border: 1px solid {danger_border}; }}
+        QPushButton#danger:hover {{ background: {danger_hover}; }}
+        QPushButton#link {{ background: transparent; color: {muted}; border: none; padding: 4px 0; font-size: 12px; text-decoration: underline; }}
+        QPushButton#link:hover {{ color: {text}; }}
 
         /* Table */
         QTableView, QTableWidget {{
@@ -199,6 +198,40 @@ def build_stylesheet(theme: str, accent: QColor, background: str = "") -> str:
 
         /* Scroll areas */
         QScrollArea {{ border: none; background: transparent; }}
+
+        /* Dialogs */
+        QDialog {{ background: {window}; color: {text}; }}
+        QDialog QLabel {{ color: {text}; }}
+
+        /* Menus */
+        QMenu {{ background: {surface}; color: {text}; border: 1px solid {border}; }}
+        QMenu::item:selected {{ background: {accent.name()}; color: white; }}
+
+        /* Tabs */
+        QTabWidget::pane {{ border: 1px solid {border}; background: {surface}; }}
+        QTabBar::tab {{ background: {field}; color: {text}; padding: 8px 16px; border: 1px solid {border}; }}
+        QTabBar::tab:selected {{ background: {surface}; border-bottom-color: {surface}; }}
+
+        /* Tree */
+        QTreeWidget, QTreeView {{ background: {surface}; color: {text}; border: 1px solid {border}; }}
+        QTreeWidget::item:selected {{ background: {accent.name()}; color: white; }}
+
+        /* Tooltips */
+        QToolTip {{ background: {tooltip_bg}; color: {tooltip_text}; border: 1px solid {border}; padding: 4px 8px; }}
+
+        /* Status bar */
+        QStatusBar {{ background: {window}; color: {muted}; }}
+        QStatusBar QLabel {{ color: {muted}; }}
+
+        /* List widgets */
+        QListWidget, QListView {{ background: {surface}; color: {text}; border: 1px solid {border}; }}
+        QListWidget::item:selected {{ background: {accent.name()}; color: white; }}
+
+        /* Dialog button box */
+        QDialogButtonBox QPushButton {{ min-width: 80px; }}
+
+        /* Form labels */
+        QFormLayout QLabel {{ color: {text}; }}
     """
 
 
@@ -334,6 +367,20 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage(tr("Bienvenue dans Classeur. Choisissez un dossier source pour commencer."))
         self._update_all_stats()
+        self._update_ocr_status()
+
+    def _update_ocr_status(self):
+        from .infrastructure.ocr import LocalPDFOCR
+        ocr = LocalPDFOCR()
+        if ocr.available:
+            self.dashboard_page.ocr_label.setText(tr("OCR : disponible (Tesseract + Poppler)"))
+            self.dashboard_page.ocr_label.setStyleSheet("color: #22c55e;")
+        elif ocr.tesseract_available:
+            self.dashboard_page.ocr_label.setText(tr("OCR images : disponible — OCR PDF : installer Poppler (pdftoppm)"))
+            self.dashboard_page.ocr_label.setStyleSheet("color: #eab308;")
+        else:
+            self.dashboard_page.ocr_label.setText(tr("OCR non disponible — installer Tesseract pour lire les images scannées"))
+            self.dashboard_page.ocr_label.setStyleSheet("color: #ef4444;")
 
     def _switch_page(self, index: int):
         self.stack.setCurrentIndex(index)
@@ -444,9 +491,11 @@ class MainWindow(QMainWindow):
     def folder_paths(self) -> tuple[Path, Path] | None:
         source_text = self.import_page.source_edit.text().strip()
         destination_text = self.import_page.destination_edit.text().strip()
-        if not source_text or not destination_text:
-            QMessageBox.warning(self, tr("Dossiers requis"), tr("Choisissez un dossier source et un dossier de classement."))
+        if not source_text:
+            QMessageBox.warning(self, tr("Dossier requis"), tr("Choisissez un dossier à organiser."))
             return None
+        if not destination_text:
+            destination_text = source_text
         try:
             source, destination = resolve_folder_pair(Path(source_text), Path(destination_text))
         except FolderPairError as exc:
@@ -638,8 +687,6 @@ class MainWindow(QMainWindow):
             first = paths[0]
             source = first if first.is_dir() else first.parent
             self.import_page.source_edit.setText(str(source))
-            if not self.import_page.destination_edit.text():
-                self.import_page.destination_edit.setText(str(source.parent / "MDJR_Classement"))
             self._save_config()
         self.scan_existing()
 

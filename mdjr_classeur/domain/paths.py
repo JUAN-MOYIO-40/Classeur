@@ -15,7 +15,7 @@ def resolve_folder_pair(source: Path, destination: Path) -> tuple[Path, Path]:
     if destination.exists() and not destination.is_dir():
         raise FolderPairError("Le dossier destination existe déjà mais n’est pas un dossier.")
     if source == destination:
-        raise FolderPairError("Les dossiers source et destination doivent être différents.")
+        return source, destination
     if source in destination.parents or destination in source.parents:
         raise FolderPairError("Les dossiers source et destination ne doivent pas être imbriqués.")
     return source, destination

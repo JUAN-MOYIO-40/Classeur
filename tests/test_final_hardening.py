@@ -941,11 +941,11 @@ class TestAgentLedger:
 
 class TestDomainModels:
 
-    def test_folder_pair_rejects_same(self, tmp_path: Path):
+    def test_folder_pair_allows_same(self, tmp_path: Path):
         d = tmp_path / "dir"
         d.mkdir()
-        with pytest.raises(FolderPairError):
-            resolve_folder_pair(d, d)
+        src, dst = resolve_folder_pair(d, d)
+        assert src == dst
 
     def test_folder_pair_rejects_nested(self, tmp_path: Path):
         parent = tmp_path / "parent"

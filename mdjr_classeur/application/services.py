@@ -43,12 +43,16 @@ class ScanService:
         if self.ledger is not None:
             self.ledger.recover_interrupted()
 
-    def analyze_path(self, path: Path, destination_dir: Path, existing: bool = True) -> PlanItem | None:
+    def analyze_path(self, path: Path, destination_dir: Path, existing: bool = True, *, same_folder: bool = False) -> PlanItem | None:
         if not path.is_file() or path.is_symlink() or is_ignored_file(path):
             return None
         try:
-            path.relative_to(destination_dir)
-            return None
+            relative = path.relative_to(destination_dir)
+            if same_folder:
+                if len(relative.parts) > 1:
+                    return None
+            else:
+                return None
         except ValueError:
             pass
         if self.ledger is not None and not self.ledger.needs_processing(path):
@@ -97,10 +101,11 @@ class ScanService:
         imposerait de les conserver en mémoire avant de commencer le travail.
         """
         source_dir, destination_dir = resolve_folder_pair(source_dir, destination_dir)
+        same_folder = source_dir == destination_dir
         try:
-            paths = source_dir.rglob("*")
+            paths = source_dir.iterdir() if same_folder else source_dir.rglob("*")
             for path in paths:
-                item = self.analyze_path(path, destination_dir)
+                item = self.analyze_path(path, destination_dir, same_folder=same_folder)
                 if item is not None:
                     yield item
         except OSError:
