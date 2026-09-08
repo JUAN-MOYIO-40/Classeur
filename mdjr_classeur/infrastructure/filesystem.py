@@ -99,12 +99,24 @@ class FileOperationService:
     def __init__(self, duplicate_lookup=None):
         self.duplicate_lookup = duplicate_lookup
 
+    @staticmethod
+    def _resolved(path: Path) -> Path:
+        try:
+            return path.resolve()
+        except OSError:
+            return path
+
     def execute(self, items: list[PlanItem], mode: str, progress=None) -> list[dict]:
         results: list[dict] = []
         batch_id = str(time.time_ns())
         total = max(1, len(items))
+        # Les fichiers du lot ne sont pas encore classés : un original et sa copie
+        # se verraient mutuellement comme doublons et finiraient tous les deux en
+        # quarantaine. On ne considère comme doublon qu'un fichier déjà rangé.
+        pending = {self._resolved(entry.source) for entry in items}
         for index, item in enumerate(items, start=1):
             source = item.source
+            pending.discard(self._resolved(source))
             try:
                 before = source.stat()
                 search_root = item.destination_root or item.destination_dir
@@ -114,6 +126,10 @@ class FileOperationService:
                     )
                 else:
                     duplicate_match = find_content_match(source, search_root, item.sha256 or None, item.normalized_text_sha256 or None)
+                if duplicate_match is not None:
+                    candidate = duplicate_match[0]
+                    if self._resolved(candidate) in pending or not candidate.exists():
+                        duplicate_match = None
                 if duplicate_match is not None:
                     duplicate, duplicate_kind = duplicate_match
                     dup_root = item.destination_root or item.destination_dir.parent
