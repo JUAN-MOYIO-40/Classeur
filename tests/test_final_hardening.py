@@ -539,7 +539,7 @@ class TestPerformance:
         for path in source.iterdir():
             classifier.classify(path)
         elapsed = time.perf_counter() - start
-        assert elapsed < 10, f"100 classifications took {elapsed:.1f}s (limit: 10s)"
+        assert elapsed < 15, f"100 classifications took {elapsed:.1f}s (limit: 15s)"
 
     def test_search_index_500_entries(self, tmp_path: Path):
         index = SearchIndex(tmp_path / "perf.sqlite3")

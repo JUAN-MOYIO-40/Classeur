@@ -373,13 +373,10 @@ class MainWindow(QMainWindow):
         from .infrastructure.ocr import LocalPDFOCR
         ocr = LocalPDFOCR()
         if ocr.available:
-            self.dashboard_page.ocr_label.setText(tr("OCR : disponible (Tesseract + Poppler)"))
+            self.dashboard_page.ocr_label.setText(tr("OCR : disponible (Tesseract embarqué)"))
             self.dashboard_page.ocr_label.setStyleSheet("color: #22c55e;")
-        elif ocr.tesseract_available:
-            self.dashboard_page.ocr_label.setText(tr("OCR images : disponible — OCR PDF : installer Poppler (pdftoppm)"))
-            self.dashboard_page.ocr_label.setStyleSheet("color: #eab308;")
         else:
-            self.dashboard_page.ocr_label.setText(tr("OCR non disponible — installer Tesseract pour lire les images scannées"))
+            self.dashboard_page.ocr_label.setText(tr("OCR non disponible — Tesseract non trouvé"))
             self.dashboard_page.ocr_label.setStyleSheet("color: #ef4444;")
 
     def _switch_page(self, index: int):

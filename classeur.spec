@@ -9,6 +9,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('assets', 'assets'),
+        ('tesseract', 'tesseract'),
     ],
     hiddenimports=[
         'pypdf',
