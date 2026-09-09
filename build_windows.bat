@@ -11,7 +11,7 @@ if not exist ".venv\Scripts\python.exe" (
 set "PYTHON=.venv\Scripts\python.exe"
 
 echo [2/4] Verification des dependances locales...
-%PYTHON% -c "import PySide6, pypdf, docx, watchdog, PyInstaller" >nul 2>&1
+%PYTHON% -c "import PySide6, pypdf, docx, watchdog, pymupdf, PyInstaller" >nul 2>&1
 if errorlevel 1 (
     echo Dependances absentes : installation initiale requise.
     echo Une connexion Internet est necessaire uniquement pour cette etape.
@@ -28,30 +28,26 @@ if errorlevel 1 (
     if errorlevel 1 goto :error
 )
 
-echo [3/4] Verification OCR optionnel...
-set "OCR_OK=1"
-where tesseract.exe >nul 2>&1
-if errorlevel 1 (
-    echo OCR PDF scanne desactive : tesseract.exe absent du PATH.
-    set "OCR_OK=0"
+echo [3/4] Verification du moteur OCR embarque...
+if exist "tesseract\tesseract.exe" (
+    echo Dossier tesseract\ trouve : l'OCR sera inclus dans l'executable.
+) else (
+    echo Dossier tesseract\ absent : l'executable se rabattra sur un Tesseract
+    echo installe sur la machine. Pour l'embarquer, copiez tesseract.exe, ses
+    echo DLL et le dossier tessdata dans un dossier tesseract\ a la racine.
 )
-where pdftoppm.exe >nul 2>&1
-if errorlevel 1 (
-    echo OCR PDF scanne desactive : pdftoppm.exe absent du PATH.
-    set "OCR_OK=0"
-)
-if "%OCR_OK%"=="1" echo Les outils OCR sont disponibles.
 
-echo Construction de MDJR_Classeur.exe...
-%PYTHON% -m PyInstaller --noconfirm --clean --windowed --name MDJR_Classeur --add-data "assets;assets" --hidden-import pypdf --hidden-import docx --hidden-import watchdog main.py
+echo [4/4] Construction de Classeur.exe...
+%PYTHON% -m PyInstaller classeur.spec --distpath release --workpath build --noconfirm
 if errorlevel 1 goto :error
 
-echo [4/4] Construction terminee.
-echo L'executable se trouve dans dist\MDJR_Classeur\MDJR_Classeur.exe
- echo Tu peux compresser le dossier dist\MDJR_Classeur pour le partager.
- if /I "%CI%"=="true" exit /b 0
- pause
- exit /b 0
+echo.
+echo Construction terminee.
+echo L'executable se trouve dans release\Classeur\Classeur.exe
+echo Partagez tout le dossier release\Classeur, pas seulement le .exe.
+if /I "%CI%"=="true" exit /b 0
+pause
+exit /b 0
 
 :error
 echo.

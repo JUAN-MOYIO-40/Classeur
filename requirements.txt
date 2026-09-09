@@ -4,3 +4,6 @@ pypdf>=5.0
 python-docx>=1.1
 watchdog>=4.0,<7
 Pillow>=10.0
+# Rend les pages des PDF scannés en images avant l'OCR : sans lui, l'OCR des
+# PDF est indisponible (les PDF contenant déjà du texte restent lus par pypdf).
+PyMuPDF>=1.24

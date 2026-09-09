@@ -1,16 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_data_files
+import os
 
 block_cipher = None
+
+# Le moteur OCR est embarqué quand un dossier tesseract/ est présent à la racine
+# (tesseract.exe, ses DLL et tessdata). Ce dossier n'est pas versionné : sans
+# lui la construction reste possible et l'application se rabat sur un Tesseract
+# installé sur la machine, en signalant son absence sur le tableau de bord.
+datas = [('assets', 'assets')]
+if os.path.isdir('tesseract'):
+    datas.append(('tesseract', 'tesseract'))
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('assets', 'assets'),
-        ('tesseract', 'tesseract'),
-    ],
+    datas=datas,
     hiddenimports=[
         'pypdf',
         'docx',
