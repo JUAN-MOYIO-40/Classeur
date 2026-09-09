@@ -59,27 +59,37 @@ if _TESSDATA_DIR:
     os.environ["TESSDATA_PREFIX"] = _TESSDATA_DIR
 
 
-def _render_pdf_pages(path: Path, max_pages: int, dpi: int) -> list[Path]:
-    """Render PDF pages to temporary PNG images using PyMuPDF."""
+def _render_pdf_pages(path: Path, max_pages: int, dpi: int) -> tuple[Path | None, list[Path]]:
+    """Rend les premières pages d'un PDF en PNG temporaires via PyMuPDF.
+
+    Retourne le dossier temporaire et les images produites. Le dossier est
+    rendu même quand la conversion échoue : l'appelant le supprime dans tous
+    les cas, sinon un PDF illisible laisserait un répertoire orphelin à chaque
+    tentative.
+    """
     try:
         import pymupdf
     except ImportError:
-        return []
-    tmpdir = tempfile.mkdtemp(prefix="classeur-ocr-")
+        return None, []
+    tmpdir = Path(tempfile.mkdtemp(prefix="classeur-ocr-"))
     images: list[Path] = []
+    document = None
     try:
-        doc = pymupdf.open(str(path))
-        for i in range(min(max_pages, len(doc))):
-            page = doc[i]
-            mat = pymupdf.Matrix(dpi / 72, dpi / 72)
-            pix = page.get_pixmap(matrix=mat)
-            out = Path(tmpdir) / f"page-{i:04d}.png"
-            pix.save(str(out))
-            images.append(out)
-        doc.close()
+        document = pymupdf.open(str(path))
+        matrix = pymupdf.Matrix(dpi / 72, dpi / 72)
+        for index in range(min(max_pages, len(document))):
+            target = tmpdir / f"page-{index:04d}.png"
+            document[index].get_pixmap(matrix=matrix).save(str(target))
+            images.append(target)
     except Exception:
         pass
-    return images
+    finally:
+        if document is not None:
+            try:
+                document.close()
+            except Exception:
+                pass
+    return tmpdir, images
 
 
 class LocalPDFOCR:
@@ -126,12 +136,12 @@ class LocalPDFOCR:
     def extract(self, path: Path, max_chars: int = 30_000) -> OCRResult:
         if not self.available:
             return OCRResult("", "OCR indisponible : Tesseract non trouvé", error="tesseract absent")
-        images = _render_pdf_pages(path, self.max_pages, self.dpi)
-        if not images:
-            return OCRResult("", "OCR sans page exploitable", error="conversion PDF échouée")
+        tmpdir, images = _render_pdf_pages(path, self.max_pages, self.dpi)
         chunks: list[str] = []
         pages = 0
         try:
+            if not images:
+                return OCRResult("", "OCR sans page exploitable", error="conversion PDF échouée")
             for image in images:
                 remaining = max_chars - sum(len(c) for c in chunks)
                 if remaining <= 0:
@@ -142,17 +152,8 @@ class LocalPDFOCR:
                     chunks.append(text[:remaining])
                 pages += 1
         finally:
-            for img in images:
-                try:
-                    img.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            try:
-                img_dir = images[0].parent if images else None
-                if img_dir and img_dir.exists():
-                    shutil.rmtree(img_dir, ignore_errors=True)
-            except OSError:
-                pass
+            if tmpdir is not None:
+                shutil.rmtree(tmpdir, ignore_errors=True)
         text = "\n\n".join(chunks)[:max_chars]
         if not text:
             return OCRResult("", "OCR terminé mais aucun texte fiable extrait", pages, "résultat vide")

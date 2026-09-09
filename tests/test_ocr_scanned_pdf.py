@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -27,3 +28,26 @@ def test_scanned_pdf_is_read_by_local_ocr(tmp_path: Path):
     classification = LocalClassifier().classify(pdf)
     assert classification.content_status == "contenu lu par OCR local"
     assert classification.subject == "Physique"
+
+
+def _classeur_tmpdirs() -> set[Path]:
+    return set(Path(tempfile.gettempdir()).glob("classeur-ocr-*"))
+
+
+def test_unreadable_pdf_leaves_no_temporary_directory(tmp_path: Path):
+    """Un PDF illisible ne doit pas laisser de dossier temporaire orphelin."""
+    broken = tmp_path / "casse.pdf"
+    broken.write_bytes(b"%PDF-1.4\nceci n'est pas un vrai PDF")
+    before = _classeur_tmpdirs()
+    result = LocalPDFOCR(max_pages=1).extract(broken)
+    assert result.text == ""
+    assert _classeur_tmpdirs() == before
+
+
+@pytest.mark.skipif(not LocalPDFOCR().available, reason="Tesseract n'est pas disponible")
+def test_successful_ocr_leaves_no_temporary_directory(tmp_path: Path):
+    pdf = tmp_path / "scan.pdf"
+    _make_scanned_pdf(pdf)
+    before = _classeur_tmpdirs()
+    LocalPDFOCR(max_pages=1).extract(pdf)
+    assert _classeur_tmpdirs() == before
