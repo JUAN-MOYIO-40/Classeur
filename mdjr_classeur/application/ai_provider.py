@@ -382,7 +382,86 @@ class LlamaCppProvider(BaseAIProvider):
 # KoboldCppProvider — provider LLM local via koboldcpp HTTP API
 # ---------------------------------------------------------------------------
 
-class KoboldCppProvider(BaseAIProvider):
+class ChatCompletionProvider(BaseAIProvider):
+    """Base des providers qui dialoguent par messages système/utilisateur.
+
+    Les quatre tâches documentaires ne diffèrent que par leur prompt : seule
+    la façon d'envoyer les messages change d'un moteur à l'autre. Les
+    sous-classes n'implémentent donc que `_chat`, et les prompts restent
+    définis à un seul endroit.
+    """
+
+    @abstractmethod
+    def _chat(self, messages: list[dict], max_tokens: int = 256) -> tuple[str, int]:
+        """Retourne (réponse, durée en ms). Une réponse vide signale un échec."""
+
+    def summarize(self, text: str, max_words: int = 50) -> AIResponse:
+        messages = [
+            {"role": "system", "content": f"Résume le texte en {max_words} mots maximum. Réponds uniquement avec le résumé."},
+            {"role": "user", "content": text[:3000]},
+        ]
+        output, duration = self._chat(messages, max_tokens=200)
+        return AIResponse(output, 0.75 if output else 0.0, self.name, duration_ms=duration)
+
+    def suggest_classification(self, text: str, filename: str, subjects: dict[str, list[str]], categories: dict[str, list[str]]) -> AIResponse:
+        subject_list = ", ".join(subjects.keys())
+        category_list = ", ".join(categories.keys())
+        messages = [
+            {"role": "system", "content": "Tu es un assistant de classification documentaire. Réponds UNIQUEMENT avec un objet JSON valide."},
+            {"role": "user", "content": (
+                f"Analyse ce document et classifie-le.\n\n"
+                f"Fichier : {filename}\nContenu : {text[:2500]}\n\n"
+                f"Matières possibles : {subject_list}\n"
+                f"Catégories possibles : {category_list}\n\n"
+                f'Réponds avec ce JSON : {{"category": "...", "subject": "...", "confidence": 0.XX, "reason": "..."}}'
+            )},
+        ]
+        output, duration = self._chat(messages, max_tokens=256)
+        suggestions = {}
+        parsed = _extract_json(output)
+        if parsed:
+            if parsed.get("subject") in subjects:
+                suggestions["subject"] = parsed["subject"]
+            if parsed.get("category") in categories:
+                suggestions["category"] = parsed["category"]
+            confidence = 0.80 if suggestions else 0.40
+            reason = parsed.get("reason", output[:200])
+        else:
+            confidence = 0.30
+            reason = output[:200]
+        return AIResponse(reason, confidence, self.name, suggestions, duration_ms=duration)
+
+    def suggest_filename(self, text: str, current_name: str, classification: Classification) -> AIResponse:
+        messages = [
+            {"role": "system", "content": "Propose un nom de fichier descriptif. Réponds UNIQUEMENT avec le nom, sans extension."},
+            {"role": "user", "content": (
+                f"Fichier actuel : {current_name}\n"
+                f"Matière : {classification.subject}\n"
+                f"Catégorie : {classification.category}\n"
+                f"Contenu : {text[:2000]}"
+            )},
+        ]
+        output, duration = self._chat(messages, max_tokens=100)
+        output = re.sub(r'[<>:"/\\|?*\n\r]', '', output).strip()[:120]
+        output = output.strip('"\'` ')
+        return AIResponse(
+            output or current_name,
+            0.70 if output else 0.0,
+            self.name,
+            {"suggested_name": output} if output else {},
+            duration_ms=duration,
+        )
+
+    def answer_question(self, question: str, context: str) -> AIResponse:
+        messages = [
+            {"role": "system", "content": "Réponds à la question en te basant uniquement sur le contexte fourni. Si l'information n'est pas dans le contexte, dis-le clairement."},
+            {"role": "user", "content": f"Contexte :\n{context[:3000]}\n\nQuestion : {question}"},
+        ]
+        output, duration = self._chat(messages)
+        return AIResponse(output, 0.75 if output else 0.0, self.name, duration_ms=duration)
+
+
+class KoboldCppProvider(ChatCompletionProvider):
     """Provider pour modèle GGUF local via koboldcpp (API HTTP locale).
 
     Alternative à LlamaCppProvider quand llama-cli ne fonctionne pas.
@@ -513,70 +592,99 @@ class KoboldCppProvider(BaseAIProvider):
             self._last_error = str(exc)
             return "", duration
 
-    def summarize(self, text: str, max_words: int = 50) -> AIResponse:
-        messages = [
-            {"role": "system", "content": f"Résume le texte en {max_words} mots maximum. Réponds uniquement avec le résumé."},
-            {"role": "user", "content": text[:3000]},
-        ]
-        output, duration = self._chat(messages, max_tokens=200)
-        return AIResponse(output, 0.75 if output else 0.0, self.name, duration_ms=duration)
 
-    def suggest_classification(self, text: str, filename: str, subjects: dict[str, list[str]], categories: dict[str, list[str]]) -> AIResponse:
-        subject_list = ", ".join(subjects.keys())
-        category_list = ", ".join(categories.keys())
-        messages = [
-            {"role": "system", "content": "Tu es un assistant de classification documentaire. Réponds UNIQUEMENT avec un objet JSON valide."},
-            {"role": "user", "content": (
-                f"Analyse ce document et classifie-le.\n\n"
-                f"Fichier : {filename}\nContenu : {text[:2500]}\n\n"
-                f"Matières possibles : {subject_list}\n"
-                f"Catégories possibles : {category_list}\n\n"
-                f'Réponds avec ce JSON : {{"category": "...", "subject": "...", "confidence": 0.XX, "reason": "..."}}'
-            )},
-        ]
-        output, duration = self._chat(messages, max_tokens=256)
-        suggestions = {}
-        parsed = _extract_json(output)
-        if parsed:
-            if parsed.get("subject") in subjects:
-                suggestions["subject"] = parsed["subject"]
-            if parsed.get("category") in categories:
-                suggestions["category"] = parsed["category"]
-            confidence = 0.80 if suggestions else 0.40
-            reason = parsed.get("reason", output[:200])
-        else:
-            confidence = 0.30
-            reason = output[:200]
-        return AIResponse(reason, confidence, self.name, suggestions, duration_ms=duration)
+class Gpt4AllProvider(ChatCompletionProvider):
+    """Provider pour modèle GGUF local via GPT4All, moteur embarqué dans l'exe.
 
-    def suggest_filename(self, text: str, current_name: str, classification: Classification) -> AIResponse:
-        messages = [
-            {"role": "system", "content": "Propose un nom de fichier descriptif. Réponds UNIQUEMENT avec le nom, sans extension."},
-            {"role": "user", "content": (
-                f"Fichier actuel : {current_name}\n"
-                f"Matière : {classification.subject}\n"
-                f"Catégorie : {classification.category}\n"
-                f"Contenu : {text[:2000]}"
-            )},
-        ]
-        output, duration = self._chat(messages, max_tokens=100)
-        output = re.sub(r'[<>:"/\\|?*\n\r]', '', output).strip()[:120]
-        output = output.strip('"\'` ')
-        return AIResponse(
-            output or current_name,
-            0.70 if output else 0.0,
-            self.name,
-            {"suggested_name": output} if output else {},
-            duration_ms=duration,
-        )
+    Contrairement à koboldcpp et llama-cli, GPT4All n'exige aucun binaire
+    installé sur la machine : son moteur est une bibliothèque livrée avec
+    l'application. Seul le fichier modèle reste à fournir, ce qui permet
+    d'activer l'IA locale en déposant un .gguf, sans autre installation.
+    """
 
-    def answer_question(self, question: str, context: str) -> AIResponse:
-        messages = [
-            {"role": "system", "content": "Réponds à la question en te basant uniquement sur le contexte fourni. Si l'information n'est pas dans le contexte, dis-le clairement."},
-            {"role": "user", "content": f"Contexte :\n{context[:3000]}\n\nQuestion : {question}"},
-        ]
-        output, duration = self._chat(messages)
-        return AIResponse(output, 0.75 if output else 0.0, self.name, duration_ms=duration)
+    def __init__(self, model_path: Path | None = None, threads: int = 4,
+                 context_size: int = 2048, timeout: int = 300):
+        self._model_path = model_path
+        self._threads = threads
+        self._context_size = context_size
+        self._timeout = timeout
+        self._last_error: str = ""
+        self._available_cache: bool | None = None
+        self._model = None
+
+    @property
+    def name(self) -> str:
+        return "gpt4all-local"
+
+    @property
+    def available(self) -> bool:
+        if self._available_cache is None:
+            self._available_cache = self._check_available()
+        return self._available_cache
+
+    def _check_available(self) -> bool:
+        try:
+            import gpt4all  # noqa: F401
+        except ImportError:
+            self._last_error = "Moteur GPT4All absent de cette installation"
+            return False
+        if self._model_path is None or not self._model_path.exists():
+            self._last_error = "Fichier modèle introuvable"
+            return False
+        if self._model_path.stat().st_size < 100_000:
+            self._last_error = "Fichier modèle trop petit (possiblement corrompu)"
+            return False
+        return True
+
+    def invalidate_cache(self):
+        self._available_cache = None
+        self._model = None
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
+    def _ensure_model(self) -> bool:
+        """Charge le modèle au premier usage : l'ouvrir coûte du temps et de la RAM."""
+        if self._model is not None:
+            return True
+        if not self.available:
+            return False
+        try:
+            from gpt4all import GPT4All
+            self._model = GPT4All(
+                self._model_path.name,
+                model_path=str(self._model_path.parent),
+                allow_download=False,
+                device="cpu",
+                n_ctx=self._context_size,
+                n_threads=self._threads,
+                verbose=False,
+            )
+        except Exception as exc:
+            self._last_error = f"Chargement du modèle impossible : {exc}"
+            self._model = None
+            return False
+        return True
+
+    def unload(self):
+        """Libère la mémoire occupée par le modèle."""
+        self._model = None
+
+    def _chat(self, messages: list[dict], max_tokens: int = 256) -> tuple[str, int]:
+        if not self._ensure_model():
+            return "", 0
+        system = "\n".join(m["content"] for m in messages if m.get("role") == "system")
+        prompt = "\n\n".join(m["content"] for m in messages if m.get("role") != "system")
+        start = time.monotonic()
+        try:
+            with self._model.chat_session(system_prompt=system):
+                output = self._model.generate(prompt, max_tokens=max_tokens, temp=0.1)
+        except Exception as exc:
+            self._last_error = str(exc)
+            return "", int((time.monotonic() - start) * 1000)
+        duration = int((time.monotonic() - start) * 1000)
+        return (output or "").strip(), duration
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +732,7 @@ class AIProviderRegistry:
     def llm_provider(self) -> BaseAIProvider | None:
         """Retourne le provider LLM s'il est enregistré et disponible."""
         for p in self._providers:
-            if isinstance(p, (LlamaCppProvider, KoboldCppProvider)) and p.available:
+            if isinstance(p, (LlamaCppProvider, ChatCompletionProvider)) and p.available:
                 return p
         return None
 

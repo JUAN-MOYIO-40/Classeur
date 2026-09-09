@@ -158,6 +158,22 @@ La suppression automatique est désactivée. Le choix recommandé est la quarant
 
 Classeur n'embarque pas de grand modèle génératif dans la version standard. Le moteur local est déterministe et plus léger. Il est plus facile à expliquer et il ne demande pas de connexion.
 
+## Activer l'IA locale (facultatif)
+
+Le moteur d'inférence GPT4All est livré avec l'application : aucun logiciel supplémentaire n'est à installer. Pour activer l'assistance par modèle, il suffit de déposer un fichier de modèle :
+
+```text
+C:\Users\<votre nom>\.mdjr_classeur\models\model.gguf
+```
+
+N'importe quel modèle au format GGUF convient. Un modèle de 0,5 à 1,5 milliard de paramètres en quantification Q4 pèse entre 400 Mo et 1,1 Go. Au redémarrage, la page `Paramètres` indique le modèle détecté.
+
+Le modèle n'est **pas** livré avec l'application, pour deux raisons : il pèse plusieurs fois le poids du programme, et il n'est utile qu'à une partie des utilisateurs.
+
+**Vérifiez la vitesse avant de compter dessus.** L'inférence sur processeur est lente : sur un portable à deux cœurs, une réponse demande plus de deux minutes par document, alors que le moteur de classement habituel répond en quelques millisecondes et s'est montré plus fiable sur nos essais. L'IA locale n'a d'intérêt que sur une machine récente, et seulement pour les documents que le moteur classique n'arrive pas à trancher. Sans modèle, l'application fonctionne normalement et le signale clairement.
+
+Si `koboldcpp` ou `llama-cli` est installé sur la machine, Classeur l'utilise en priorité ; sinon il se sert du moteur embarqué.
+
 ## Documentation
 
 Les documents suivants complètent ce README :

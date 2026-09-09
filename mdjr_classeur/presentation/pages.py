@@ -816,7 +816,7 @@ class SettingsPage(QWidget):
                          model_info: dict | None = None,
                          system_info: object | None = None,
                          current_mode: str = "auto"):
-        has_llm = "llama-cpp-local" in available_providers
+        has_llm = any(p != "local-heuristic" for p in available_providers)
         if has_llm and model_info:
             status = tr("Disponible")
             self.ai_status_label.setText(

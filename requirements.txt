@@ -7,3 +7,7 @@ Pillow>=10.0
 # Rend les pages des PDF scannés en images avant l'OCR : sans lui, l'OCR des
 # PDF est indisponible (les PDF contenant déjà du texte restent lus par pypdf).
 PyMuPDF>=1.24
+# Moteur d'IA locale embarqué : permet d'activer l'assistance par modèle en
+# déposant un fichier .gguf, sans installer koboldcpp ni llama-cli. Le modèle
+# lui-même n'est pas livré avec l'application.
+gpt4all>=2.8

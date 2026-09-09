@@ -28,7 +28,7 @@ from .application.agent import AgentLedger
 from .application.learning import LearningMemory
 from .application.indexing import SearchIndexService
 from .application.duplicates import DuplicateService
-from .application.ai_provider import AIProviderRegistry, KoboldCppProvider, LlamaCppProvider
+from .application.ai_provider import AIProviderRegistry, Gpt4AllProvider, KoboldCppProvider, LlamaCppProvider
 from .application.plan import PlanEditService
 from .infrastructure.filesystem import FileOperationService, atomic_write_text, is_ignored_file
 from .infrastructure.history import HistoryRepository
@@ -267,6 +267,10 @@ class MainWindow(QMainWindow):
         self.model_path = CONFIG_DIR / "models" / "model.gguf"
         self.system_capabilities = detect_capabilities()
         if self.model_path.exists():
+            # GPT4All en premier : son moteur est livré avec l'application, donc
+            # déposer un modèle suffit. register() empile, si bien qu'un
+            # koboldcpp ou un llama-cli installé sur la machine passe devant.
+            self.ai_registry.register(Gpt4AllProvider(self.model_path))
             if self.system_capabilities.has_koboldcpp:
                 self.ai_registry.register(KoboldCppProvider(
                     self.model_path, exe_path=self.system_capabilities.koboldcpp_path,

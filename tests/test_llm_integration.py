@@ -6,6 +6,7 @@ sans LLM, avec LLM simulé, LLM absent, corrompu, timeout, etc.
 """
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import socket
@@ -24,6 +25,8 @@ from mdjr_classeur.application.ai_provider import (
     AIProviderRegistry,
     AIResponse,
     BaseAIProvider,
+    ChatCompletionProvider,
+    Gpt4AllProvider,
     KoboldCppProvider,
     LlamaCppProvider,
     LocalHeuristicProvider,
@@ -852,3 +855,93 @@ class TestKoboldDetection:
         caps = detect_capabilities()
         assert isinstance(caps.has_koboldcpp, bool)
         assert isinstance(caps.koboldcpp_path, str)
+
+
+# =========================================================================
+# 21. Provider GPT4All — moteur embarqué, aucun binaire externe requis
+# =========================================================================
+
+class TestGpt4AllProvider:
+
+    def test_not_available_without_model(self, tmp_path):
+        provider = Gpt4AllProvider(model_path=tmp_path / "absent.gguf")
+        assert provider.available is False
+        assert "introuvable" in provider.last_error
+
+    def test_tiny_model_detected_as_corrupt(self, tmp_path):
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"CORROMPU")
+        provider = Gpt4AllProvider(model_path=model)
+        assert provider.available is False
+        assert "corrompu" in provider.last_error
+
+    def test_not_available_when_engine_missing(self, tmp_path):
+        """Sans le paquet gpt4all, le provider s'efface au lieu de planter."""
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"\x00" * 200_000)
+        provider = Gpt4AllProvider(model_path=model)
+        real_import = builtins.__import__
+
+        def refuse_gpt4all(name, *args, **kwargs):
+            if name == "gpt4all":
+                raise ImportError("absent")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=refuse_gpt4all):
+            provider.invalidate_cache()
+            assert provider.available is False
+        assert "GPT4All" in provider.last_error
+
+    def test_chat_returns_empty_when_model_cannot_load(self, tmp_path):
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"\x00" * 200_000)
+        provider = Gpt4AllProvider(model_path=model)
+        with patch.object(Gpt4AllProvider, "_ensure_model", return_value=False):
+            output, duration = provider._chat([{"role": "user", "content": "test"}])
+        assert output == ""
+        assert duration == 0
+
+    def test_generation_error_degrades_without_raising(self, tmp_path):
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"\x00" * 200_000)
+        provider = Gpt4AllProvider(model_path=model)
+        broken = MagicMock()
+        broken.chat_session.side_effect = RuntimeError("moteur en panne")
+        provider._model = broken
+        with patch.object(Gpt4AllProvider, "_ensure_model", return_value=True):
+            result = provider.summarize("un texte quelconque")
+        assert result.text == ""
+        assert result.confidence == 0.0
+
+    def test_registry_falls_back_when_model_absent(self, tmp_path):
+        reg = AIProviderRegistry()
+        reg.register(Gpt4AllProvider(model_path=tmp_path / "absent.gguf"))
+        assert reg.active_provider.name == "local-heuristic"
+
+    def test_unload_releases_the_model(self, tmp_path):
+        provider = Gpt4AllProvider(model_path=tmp_path / "absent.gguf")
+        provider._model = MagicMock()
+        provider.unload()
+        assert provider._model is None
+
+
+class TestChatPromptsAreShared:
+    """Les prompts ne doivent exister qu'à un seul endroit."""
+
+    def test_both_chat_providers_share_the_same_base(self):
+        assert issubclass(KoboldCppProvider, ChatCompletionProvider)
+        assert issubclass(Gpt4AllProvider, ChatCompletionProvider)
+
+    def test_task_methods_are_not_redefined_per_provider(self):
+        for method in ("summarize", "suggest_classification", "suggest_filename", "answer_question"):
+            assert method not in vars(KoboldCppProvider), f"{method} dupliqué dans KoboldCppProvider"
+            assert method not in vars(Gpt4AllProvider), f"{method} dupliqué dans Gpt4AllProvider"
+
+    def test_registry_recognises_gpt4all_as_an_llm(self, tmp_path):
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"\x00" * 200_000)
+        provider = Gpt4AllProvider(model_path=model)
+        provider._available_cache = True
+        reg = AIProviderRegistry()
+        reg.register(provider)
+        assert reg.llm_provider is provider
