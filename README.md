@@ -160,15 +160,15 @@ Classeur n'embarque pas de grand modèle génératif dans la version standard. L
 
 ## Activer l'IA locale (facultatif)
 
-Le moteur d'inférence GPT4All est livré avec l'application : aucun logiciel supplémentaire n'est à installer. Pour activer l'assistance par modèle, il suffit de déposer un fichier de modèle :
+Le moteur d'inférence GPT4All est livré avec l'application : aucun logiciel supplémentaire n'est à installer. Pour activer l'assistance par modèle, déposez un fichier `.gguf` dans ce dossier, en gardant son nom d'origine :
 
 ```text
-C:\Users\<votre nom>\.mdjr_classeur\models\model.gguf
+C:\Users\<votre nom>\.mdjr_classeur\models\
 ```
 
-N'importe quel modèle au format GGUF convient. Un modèle de 0,5 à 1,5 milliard de paramètres en quantification Q4 pèse entre 400 Mo et 1,1 Go. Au redémarrage, la page `Paramètres` indique le modèle détecté.
+N'importe quel modèle au format GGUF convient, et aucun renommage n'est nécessaire. Si le dossier en contient plusieurs, `model.gguf` est prioritaire, sinon le plus volumineux est retenu. Au redémarrage, la page `Paramètres` indique le modèle détecté.
 
-Le modèle n'est **pas** livré avec l'application, pour deux raisons : il pèse plusieurs fois le poids du programme, et il n'est utile qu'à une partie des utilisateurs.
+Un modèle est proposé en téléchargement facultatif sur la [page des versions](https://github.com/JUAN-MOYIO-40/Classeur/releases/latest), à côté de l'application. Il n'est pas inclus dans l'archive principale : il pèse plusieurs fois le poids du programme et ne sert qu'à une partie des utilisateurs.
 
 **Vérifiez la vitesse avant de compter dessus.** L'inférence sur processeur est lente : sur un portable à deux cœurs, une réponse demande plus de deux minutes par document, alors que le moteur de classement habituel répond en quelques millisecondes et s'est montré plus fiable sur nos essais. L'IA locale n'a d'intérêt que sur une machine récente, et seulement pour les documents que le moteur classique n'arrive pas à trancher. Sans modèle, l'application fonctionne normalement et le signale clairement.
 

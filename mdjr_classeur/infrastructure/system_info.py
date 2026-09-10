@@ -115,6 +115,32 @@ def detect_capabilities() -> SystemCapabilities:
     )
 
 
+def find_model_file(models_dir: Path) -> Path:
+    """Retourne le modèle GGUF à utiliser dans un dossier.
+
+    Un modèle téléchargé garde son nom d'origine, qui indique sa taille et sa
+    quantification. Exiger un renommage en « model.gguf » n'apporte rien et
+    revient à demander la même manipulation sur chaque poste : n'importe quel
+    .gguf déposé dans le dossier est donc accepté. « model.gguf » reste
+    prioritaire pour les installations existantes, et à défaut le plus gros
+    fichier est retenu, un modèle partiellement téléchargé étant plus petit
+    que celui qu'il est censé remplacer.
+
+    Le chemin retourné quand aucun modèle n'est présent n'existe pas : les
+    appelants testent son existence, et l'absence d'IA locale est un cas normal.
+    """
+    par_defaut = models_dir / "model.gguf"
+    if par_defaut.is_file():
+        return par_defaut
+    try:
+        candidats = [p for p in models_dir.glob("*.gguf") if p.is_file()]
+    except OSError:
+        return par_defaut
+    if not candidats:
+        return par_defaut
+    return max(candidats, key=lambda p: p.stat().st_size)
+
+
 def model_file_info(model_path: Path) -> dict[str, object] | None:
     """Retourne les informations sur un fichier modèle GGUF, ou None s'il n'existe pas."""
     if not model_path.exists() or not model_path.is_file():

@@ -32,7 +32,7 @@ from .application.ai_provider import AIProviderRegistry, Gpt4AllProvider, Kobold
 from .application.plan import PlanEditService
 from .infrastructure.filesystem import FileOperationService, atomic_write_text, is_ignored_file
 from .infrastructure.history import HistoryRepository
-from .infrastructure.system_info import detect_capabilities, model_file_info, recommend_mode
+from .infrastructure.system_info import detect_capabilities, find_model_file, model_file_info, recommend_mode
 from .infrastructure.watcher import Observer, WatchEventHandler
 from .presentation.dialogs import (
     DuplicateDialog, HierarchyDialog, HistoryDialog, PreferencesDialog, RulesDialog, SearchDialog,
@@ -264,7 +264,7 @@ class MainWindow(QMainWindow):
         ai_mode = str(self.preferences.get("ai_mode", "auto"))
         llm_threshold = int(self.preferences.get("llm_threshold", 80))
         self.ai_registry = AIProviderRegistry(llm_threshold=llm_threshold, mode=ai_mode)
-        self.model_path = CONFIG_DIR / "models" / "model.gguf"
+        self.model_path = find_model_file(CONFIG_DIR / "models")
         self.system_capabilities = detect_capabilities()
         if self.model_path.exists():
             # GPT4All en premier : son moteur est livré avec l'application, donc

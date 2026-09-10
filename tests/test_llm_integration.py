@@ -33,6 +33,7 @@ from mdjr_classeur.application.ai_provider import (
     _extract_json,
 )
 from mdjr_classeur.infrastructure.system_info import (
+    find_model_file,
     SystemCapabilities,
     detect_capabilities,
     model_file_info,
@@ -945,3 +946,49 @@ class TestChatPromptsAreShared:
         reg = AIProviderRegistry()
         reg.register(provider)
         assert reg.llm_provider is provider
+
+
+# =========================================================================
+# 22. Detection du modele : n'importe quel .gguf depose suffit
+# =========================================================================
+
+class TestFindModelFile:
+
+    def test_returns_a_missing_path_when_folder_is_empty(self, tmp_path):
+        trouve = find_model_file(tmp_path)
+        assert trouve.exists() is False
+        assert model_file_info(trouve) is None
+
+    def test_returns_a_missing_path_when_folder_does_not_exist(self, tmp_path):
+        trouve = find_model_file(tmp_path / "jamais_cree")
+        assert trouve.exists() is False
+
+    def test_accepts_a_model_keeping_its_original_name(self, tmp_path):
+        modele = tmp_path / "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+        modele.write_bytes(b"\x00" * 300_000)
+        assert find_model_file(tmp_path) == modele
+
+    def test_model_gguf_wins_over_other_names(self, tmp_path):
+        (tmp_path / "autre-modele.gguf").write_bytes(b"\x00" * 900_000)
+        attendu = tmp_path / "model.gguf"
+        attendu.write_bytes(b"\x00" * 300_000)
+        assert find_model_file(tmp_path) == attendu
+
+    def test_largest_file_wins_so_a_partial_download_is_ignored(self, tmp_path):
+        (tmp_path / "telechargement-interrompu.gguf").write_bytes(b"\x00" * 50_000)
+        complet = tmp_path / "modele-complet.gguf"
+        complet.write_bytes(b"\x00" * 800_000)
+        assert find_model_file(tmp_path) == complet
+
+    def test_non_gguf_files_are_ignored(self, tmp_path):
+        (tmp_path / "notes.txt").write_bytes(b"\x00" * 900_000)
+        modele = tmp_path / "petit.gguf"
+        modele.write_bytes(b"\x00" * 300_000)
+        assert find_model_file(tmp_path) == modele
+
+    def test_found_model_drives_provider_availability(self, tmp_path):
+        modele = tmp_path / "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+        modele.write_bytes(b"\x00" * 300_000)
+        provider = Gpt4AllProvider(model_path=find_model_file(tmp_path))
+        # le paquet gpt4all est present dans l'environnement de test
+        assert provider._model_path == modele
